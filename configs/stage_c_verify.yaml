@@ -1,0 +1,33 @@
+# Stage C quick verification config.
+# Uses the Stage C model path but writes checkpoints outside checkpoints/C.
+
+model:
+  stage: C
+  landmark:
+    max_seq_len: 128
+  fusion:
+    method: late
+
+train:
+  stage: C
+  max_epochs: 1
+  batch_size: 1
+  num_workers: 0
+  use_amp: false
+  device: cuda
+  checkpoint_dir: checkpoints_verify
+  log_dir: logs_verify
+  save_every_n_epochs: 1
+  val_every_n_epochs: 1
+  loss_weight_gloss: 1.0
+  loss_weight_nms: 0.5
+  loss_weight_nms_detail: 0.3
+  loss_weight_intent: 0.3
+  loss_weight_boundary: 0.5
+  loss_weight_draft: 1.0
+
+tokenizer:
+  name: klue/roberta-base
+  max_length: 64
+  padding: max_length
+  truncation: true

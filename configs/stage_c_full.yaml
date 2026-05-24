@@ -1,0 +1,36 @@
+# Stage C full training/evaluation run.
+# Same data scale as stage_c.yaml, but writes outputs outside checkpoints/C.
+
+model:
+  stage: C
+  landmark:
+    max_seq_len: 128
+  fusion:
+    method: late
+
+train:
+  stage: C
+  max_epochs: 50
+  batch_size: 1
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  use_amp: false
+  device: cuda
+  checkpoint_dir: checkpoints_full
+  log_dir: logs_full
+  save_every_n_epochs: 5
+  val_every_n_epochs: 1
+  loss_weight_gloss: 1.0
+  loss_weight_nms: 0.5
+  loss_weight_nms_detail: 0.3
+  loss_weight_intent: 0.3
+  loss_weight_boundary: 0.5
+  loss_weight_draft: 1.0
+
+tokenizer:
+  name: klue/roberta-base
+  max_length: 64
+  padding: max_length
+  truncation: true

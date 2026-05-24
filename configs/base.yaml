@@ -1,0 +1,129 @@
+# 기본 공통 설정
+# 각 stage config에서 override한다
+
+project:
+  name: ksl_translation
+  version: "0.1.0"
+
+data:
+  keypoint_root: data/keypoints
+  crop_root: data/crops
+  manifest_dir: data/manifests
+  sequence_sampling: uniform
+  load_hand_crops: true
+  boundary_mode: annotation_or_motion
+  split_seed: 42
+  train_ratio: 0.8
+  valid_ratio: 0.1
+
+preprocess:
+  target_fps: 25.0
+  enable_crops: true
+  crop_missing_from_saved_bbox: true
+  save_face_crop: false
+  normalize_method: shoulder_width
+  extractor_config:
+    model_asset_path_hand: data/mediapipe_models/hand_landmarker.task
+    model_asset_path_face: data/mediapipe_models/face_landmarker.task
+    model_asset_path_pose: data/mediapipe_models/pose_landmarker_full.task
+    num_hands: 2
+    face_blendshape: true
+    pose_upper_body_only: true
+    pose_joints: 25
+    target_fps: 25.0
+
+model:
+  stage: C
+  landmark:
+    pose_joints: 25
+    hand_joints: 21
+    face_blendshape_dim: 52
+    face_key_joints: 68
+    d_model: 256
+    nhead: 4
+    num_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    max_seq_len: 512
+  face_expr:
+    blendshape_dim: 52
+    d_model: 128
+    nhead: 4
+    num_layers: 2
+    dim_feedforward: 256
+    dropout: 0.1
+  hand_visual:
+    cnn_out_dim: 128
+    d_model: 256
+    nhead: 4
+    num_layers: 2
+    dim_feedforward: 512
+    dropout: 0.1
+  fusion:
+    method: late
+    d_model: 256
+  heads:
+    d_model: 256
+    gloss_vocab_size: 1001
+    nms_num_classes: 12
+    nms_eyebrow_classes: 4
+    nms_eye_classes: 4
+    nms_mouth_shape_classes: 11
+    nms_head_movement_classes: 5
+    nms_gaze_direction_classes: 7
+    intent_num_classes: 7
+    boundary_num_classes: 3
+    dropout: 0.1
+  decoder:
+    d_model: 256
+    nhead: 4
+    num_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    # 아래 값은 run_train.py에서 tokenizer 로드 성공 시 자동 override된다.
+    # klue/roberta-base 기준: <s>=0, <pad>=1, </s>=2
+    vocab_size: 32000
+    max_len: 128
+    pad_token_id: 1
+    bos_token_id: 0
+    eos_token_id: 2
+
+train:
+  stage: C
+  max_epochs: 50
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  batch_size: 8
+  num_workers: 0
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  save_every_n_epochs: 5
+  val_every_n_epochs: 1
+  monitor_metric: val_loss
+  monitor_mode: min
+  device: cuda
+  loss_weight_gloss: 1.0
+  loss_weight_nms: 0.5
+  loss_weight_nms_detail: 0.3
+  loss_weight_intent: 0.3
+  loss_weight_boundary: 0.5
+  loss_weight_draft: 1.0
+
+llm:
+  provider: dummy     # "dummy" | "claude" | "openai"
+  model: claude-sonnet-4-6
+  max_tokens: 512
+  max_prev_turns: 5
+  confidence_threshold: 0.4
+
+eval:
+  device: cpu
+  output_dir: eval_results
+  draft_mode: greedy
+
+tokenizer:
+  name: klue/roberta-base
+  max_length: 64
+  padding: max_length
+  truncation: true

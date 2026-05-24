@@ -1,0 +1,26 @@
+# Core
+torch>=2.2.0
+numpy>=1.24.0
+pyyaml>=6.0
+
+# Data
+tqdm>=4.65.0
+
+# Tokenizer (klue/roberta-base)
+transformers>=4.35.0
+
+# Evaluation (선택, 없으면 간이 구현 사용)
+sacrebleu>=2.3.0
+
+# MediaPipe (랜드마크 추출)
+mediapipe>=0.10.0
+
+# Image processing (crop 저장)
+opencv-python>=4.8.0
+
+# LLM Providers (선택)
+# anthropic>=0.30.0    # Claude
+# openai>=1.0.0        # OpenAI
+
+# Testing
+pytest>=7.4.0
