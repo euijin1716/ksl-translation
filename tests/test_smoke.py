@@ -311,7 +311,7 @@ class TestNormalizer:
         assert np.isfinite(out).all()
 
     def test_shoulder_transform_degenerate_width(self):
-        # #2 가드: 좌우 어깨가 겹쳐 width=0이어도 1e-6로 clamp되어 NaN/inf가 없어야 한다.
+        # #2/E 가드: 어깨가 겹쳐 width≈0(pose 미검출)인 프레임은 ÷~0 폭발 대신 XY를 0으로 둔다.
         import numpy as np
         from src.preprocess.normalizers.coordinate_normalizer import (
             apply_shoulder_transform,
@@ -319,12 +319,13 @@ class TestNormalizer:
         )
         rng = np.random.default_rng(3)
         pose = rng.random((6, 25, 3)).astype("float32")
-        pose[:, 11, :2] = pose[:, 12, :2]   # 좌우 어깨를 같은 위치로
+        pose[:, 11, :2] = pose[:, 12, :2]   # 좌우 어깨를 같은 위치로 → 전 프레임 퇴화
         face = rng.random((6, 68, 3)).astype("float32")
         center, width = shoulder_transform_params(pose)
-        assert (width >= 1e-6).all()
         out = apply_shoulder_transform(face, center, width)
         assert np.isfinite(out).all()
+        assert float(np.abs(out[:, :, :2]).max()) == 0.0   # ÷~0 폭발(1e6) 대신 0
+        assert np.allclose(out[:, :, 2], face[:, :, 2])     # Z는 보존
 
 
 # ── 6. Validator ──────────────────────────────────────────────────────────────

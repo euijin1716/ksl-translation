@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 
+# 어깨 너비가 이 값 미만이면 pose 미검출/어깨 겹침(퇴화)으로 보고, ÷~0 폭발 대신 0 처리한다.
+# 실제 어깨 너비(정규화 이미지좌표)는 ~0.1~0.4라 충분히 분리된다.
+_MIN_SHOULDER_WIDTH = 1e-3
+
 
 def normalize_landmarks(
     landmarks: np.ndarray,
@@ -46,6 +50,8 @@ def normalize_landmarks(
             normalized[:, :, :2] -= center[:, np.newaxis, :]
             # XY 스케일: 어깨 너비로 나눔
             normalized[:, :, :2] /= width[:, np.newaxis, :]
+            # 어깨 너비 퇴화(pose 미검출) 프레임은 ÷~0 폭발 대신 XY를 0으로
+            normalized[width[:, 0] < _MIN_SHOULDER_WIDTH, :, :2] = 0.0
             meta["scale_by"] = "shoulder_width"
             meta["center_by"] = "shoulder_midpoint"
         else:
@@ -97,4 +103,6 @@ def apply_shoulder_transform(
     out = landmarks.copy()
     out[:, :, :2] -= center[:, np.newaxis, :]
     out[:, :, :2] /= width[:, np.newaxis, :]
+    # 어깨 너비 퇴화(pose 미검출) 프레임은 ÷~0 폭발 대신 XY를 0으로
+    out[width[:, 0] < _MIN_SHOULDER_WIDTH, :, :2] = 0.0
     return out.astype(np.float32)
