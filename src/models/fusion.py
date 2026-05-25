@@ -34,10 +34,15 @@ class LateFusion(nn.Module):
             nn.Dropout(config.dropout),
         )
 
-    def forward(self, streams: list[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        streams: list[torch.Tensor],
+        src_key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             streams: list of [B, T, d_i]
+            src_key_padding_mask: 사용 안 함 (per-frame concat이라 프레임 간 혼합 없음). 인터페이스 통일용.
 
         Returns:
             [B, T, d_model]
@@ -63,10 +68,16 @@ class CrossAttentionFusion(nn.Module):
         )
         self.norm = nn.LayerNorm(config.d_model)
 
-    def forward(self, streams: list[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        streams: list[torch.Tensor],
+        src_key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             streams: list of [B, T, d_i], 첫 번째가 query (landmark)
+            src_key_padding_mask: [B, T] bool, True=pad. KV에 쌓이는 패딩 프레임이
+                attention되지 않도록 KV 스트림 수만큼 time축으로 복제해 전달한다.
 
         Returns:
             [B, T, d_model]
@@ -76,9 +87,14 @@ class CrossAttentionFusion(nn.Module):
         # key/value: 나머지 스트림을 concat해 시퀀스 길이 방향으로 쌓음
         if len(projected) > 1:
             kv = torch.cat(projected[1:], dim=1)   # [B, T*(N-1), d]
+            if src_key_padding_mask is not None:
+                kv_mask = src_key_padding_mask.repeat(1, len(projected) - 1)  # [B, T*(N-1)]
+            else:
+                kv_mask = None
         else:
             kv = query
-        attn_out, _ = self.attn(query, kv, kv)
+            kv_mask = src_key_padding_mask
+        attn_out, _ = self.attn(query, kv, kv, key_padding_mask=kv_mask)
         return self.norm(query + attn_out)
 
 
@@ -93,5 +109,9 @@ class FusionModule(nn.Module):
         else:
             self.impl = LateFusion(self.config)
 
-    def forward(self, streams: list[torch.Tensor]) -> torch.Tensor:
-        return self.impl(streams)
+    def forward(
+        self,
+        streams: list[torch.Tensor],
+        src_key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.impl(streams, src_key_padding_mask)

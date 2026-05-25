@@ -60,7 +60,7 @@ model:
     dim_feedforward: 512
     dropout: 0.1
   fusion:
-    method: late
+    method: cross_attention
     d_model: 256
   heads:
     d_model: 256

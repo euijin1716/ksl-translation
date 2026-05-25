@@ -6,7 +6,7 @@ model:
   landmark:
     max_seq_len: 128
   fusion:
-    method: late
+    method: cross_attention
 
 train:
   stage: C

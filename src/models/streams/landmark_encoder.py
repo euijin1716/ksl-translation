@@ -1,7 +1,8 @@
 """Landmark stream encoder.
 
-pose + left_hand + right_hand + face_key_subset + face_blendshape를
+pose + left_hand + right_hand + face_key_subset를
 단일 시계열로 flatten하고 Transformer Encoder로 인코딩한다.
+표정 강도(face_blendshape)는 E3(FaceExprEncoder)가 전담하므로 여기서는 쓰지 않는다.
 
 Stage C의 landmark stream으로 사용한다.
 """
@@ -56,7 +57,7 @@ class LandmarkEncoder(nn.Module):
         pose_dim = c.pose_joints * c.coord_dim
         hand_dim = c.hand_joints * c.coord_dim
         face_key_dim = c.face_key_joints * c.coord_dim
-        in_dim = pose_dim + hand_dim * 2 + c.face_blendshape_dim + face_key_dim + 4  # +4 = presence_mask
+        in_dim = pose_dim + hand_dim * 2 + face_key_dim + 4  # +4 = presence_mask
 
         self.input_proj = nn.Linear(in_dim, c.d_model)
         self.manual_proj = nn.Sequential(
@@ -81,7 +82,7 @@ class LandmarkEncoder(nn.Module):
         pose: torch.Tensor,
         left_hand: torch.Tensor,
         right_hand: torch.Tensor,
-        face_blendshape: torch.Tensor,
+        face_blendshape: torch.Tensor | None = None,  # E3 전담, E1 입력에는 사용 안 함
         face_key_subset: torch.Tensor | None = None,
         presence_mask: torch.Tensor | None = None,
         src_key_padding_mask: torch.Tensor | None = None,
@@ -91,7 +92,7 @@ class LandmarkEncoder(nn.Module):
             pose:            [B, T, pose_joints, 3]
             left_hand:       [B, T, hand_joints, 3]
             right_hand:      [B, T, hand_joints, 3]
-            face_blendshape: [B, T, blendshape_dim]
+            face_blendshape: 사용 안 함 (E3 전담). 호출부 호환을 위해 시그니처만 유지.
             face_key_subset: [B, T, face_key_joints, 3] or None
             presence_mask:   [B, T, 4] bool or float, or None
             src_key_padding_mask: [B, T] bool True=pad
@@ -106,7 +107,6 @@ class LandmarkEncoder(nn.Module):
             pose.reshape(B, T, -1),
             left_hand.reshape(B, T, -1),
             right_hand.reshape(B, T, -1),
-            face_blendshape,
         ]
 
         if face_key_subset is not None:

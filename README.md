@@ -101,9 +101,9 @@ python scripts/run_eval.py \
     ↓
 KSLModel
   ├── E1: LandmarkEncoder    (pose + hand + face_key)
-  ├── E2: HandVisualEncoder  (hand crop CNN — 현재 비활성)
-  ├── E3: FaceExprEncoder    (face blendshape 52차원)
-  ├── FusionModule           (late fusion)
+  ├── E2: HandVisualEncoder  (hand crop CNN — crop 생성 시 활성, 삭제 여부 ablation 대기)
+  ├── E3: FaceExprEncoder    (face blendshape 52차원 — E1과 분리, 표정 전담)
+  ├── FusionModule           (cross-attention: E1=Query, E2·E3=Key/Value)
   ├── AllHeads               (gloss CTC / NMS / intent / boundary)
   └── KoreanDraftDecoder     (한국어 초안)
     ↓ ContextCorrector (LLM)
@@ -123,22 +123,25 @@ KSLModel
 
 ---
 
-## 학습 결과 (Stage C, test n=911)
+## 학습 결과 (Stage C, `stage_c_full_best_test`, test n=911)
 
 | 지표 | 값 | 비고 |
 |---|---|---|
 | intent_accuracy | 1.00 | 단일 도메인(help)으로 구성된 test split — 판별력 없음 |
-| nms_f1 | 0.76 | |
-| boundary_f1 | 0.57 | |
+| gloss_wer | 0.88 | 희소 vocab(5392) + 소량 데이터 영향 |
+| nms_f1 | 0.75 | |
+| boundary_f1 | 0.33 | 라벨이 모션 휴리스틱 기반 + 클래스 불균형 |
 | BLEU | 12.6 | |
 | chrF | 33.4 | |
+
+> 위 수치는 cross-attention 적용 **이전**(late fusion, E1에 blendshape 포함) 체크포인트 기준이다. 구조 변경 후 재학습 필요.
 
 ---
 
 ## 데이터
 
-- **AI Hub 한국수어 영상** (데이터셋 103) — 주 학습 데이터
-- **AI Hub 재난 안전 수어 데이터** — 추가 도메인
+- **AI Hub 재난 안전 수어 데이터** (데이터셋 114) — 현재 학습 데이터 전부 (자연재난/사회재난/기상). 모든 샘플 intent=help 단일 도메인.
+- **AI Hub 한국수어 영상** (데이터셋 103) — 도메인 확장(병원/길안내/주문 등)용, 아직 미반영
 - split 방식: **signer-independent** (동일 화자 train/test 혼재 금지)
 
 저장소에는 `data/manifests/test.jsonl`, `valid.jsonl`, `gloss_vocab.json`만 포함됩니다.
@@ -149,3 +152,48 @@ python scripts/build_manifest.py \
     --datasets aihub_sign \
     --root_aihub_sign data/aihub_sign
 ```
+
+---
+
+## 코드 수정 후 검증 방법
+
+### Level 1 — 빠른 smoke test (30초, 데이터 없음)
+
+모델 구조, forward pass, 손실 계산까지 전체 파이프라인을 더미 데이터로 확인한다.
+
+```bash
+# 스크립트
+python scripts/run_smoke_test.py
+
+# pytest (상세 에러 메시지)
+python -m pytest tests/test_smoke.py -v
+```
+
+### Level 2 — 소량 실제 데이터 검증 (5~10분)
+
+실제 .npy 파일 로드부터 손실 계산까지 확인한다.
+
+```bash
+python scripts/run_train.py \
+    --config configs/stage_c_verify.yaml \
+    --manifest data/manifests/train.jsonl \
+    --max_epochs 1
+```
+
+### Level 3 — 전체 평가
+
+```bash
+python scripts/run_eval.py \
+    --checkpoint checkpoints/C/best.pt \
+    --manifest data/manifests/test.jsonl
+```
+
+### 수정 내용별 권장 레벨
+
+| 수정 내용 | 권장 |
+|---|---|
+| 모델 구조 변경 (레이어 추가/제거) | Level 1 |
+| 손실 함수 수정 | Level 1 → 2 |
+| 데이터 로딩 / 전처리 수정 | Level 1 → 2 |
+| LLM 보정기 수정 | Level 1 |
+| 학습 성능 확인 | Level 3 |

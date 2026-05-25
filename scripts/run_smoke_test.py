@@ -18,6 +18,7 @@ from src.eval.evaluator import KSLEvaluator
 from src.infer.pipeline import InferencePipeline
 from src.llm.corrector import ContextCorrector
 from src.models.decoder import DecoderConfig
+from src.models.fusion import FusionConfig
 from src.models.ksl_model import KSLModel, ModelConfig
 from src.train.trainer import KSLTrainer, TrainerConfig
 
@@ -36,8 +37,12 @@ def run():
         train_loader = DataLoader(train_ds, batch_size=2, collate_fn=collate_fn)
         val_loader = DataLoader(val_ds, batch_size=2, collate_fn=collate_fn)
 
-        # Model
-        model = KSLModel(ModelConfig(stage=stage, decoder=DecoderConfig(max_len=16)))
+        # Model (cross-attention fusion: E1=Query, E2&E3=Key/Value)
+        model = KSLModel(ModelConfig(
+            stage=stage,
+            fusion=FusionConfig(method="cross_attention"),
+            decoder=DecoderConfig(max_len=16),
+        ))
         print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
 
         # Train 1 epoch

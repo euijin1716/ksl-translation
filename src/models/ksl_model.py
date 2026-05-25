@@ -70,6 +70,8 @@ class KSLModel(nn.Module):
             method=c.fusion.method,
             stream_dims=stream_dims,
             d_model=c.heads.d_model,
+            nhead=c.fusion.nhead,
+            dropout=c.fusion.dropout,
         )
         self.fusion = FusionModule(fusion_cfg)
 
@@ -138,7 +140,7 @@ class KSLModel(nn.Module):
         streams.append(face_feat)
 
         # ── Fusion ──────────────────────────────────────────────────────────
-        fused = self.fusion(streams)   # [B, T, d_model]
+        fused = self.fusion(streams, src_key_padding_mask)   # [B, T, d_model]
 
         # ── Heads ────────────────────────────────────────────────────────────
         head_outputs = self.heads(fused, src_key_padding_mask)
