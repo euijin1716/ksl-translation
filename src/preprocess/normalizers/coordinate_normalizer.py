@@ -61,3 +61,40 @@ def normalize_landmarks(
         meta["scale_by"] = "bbox"
 
     return normalized.astype(np.float32), meta
+
+
+def shoulder_transform_params(
+    pose: np.ndarray,
+    reference_indices: tuple[int, int] = (11, 12),
+) -> tuple[np.ndarray, np.ndarray]:
+    """pose 어깨로부터 프레임별 (center[T,2], width[T,1]) 변환 파라미터를 구한다.
+
+    `normalize_landmarks(method="shoulder_width")`와 동일한 기준을 산출하므로,
+    pose와 face_key 등 여러 스트림을 **같은 몸 기준 좌표계**로 정규화할 때 공유한다.
+    """
+    li, ri = reference_indices
+    left = pose[:, li, :2]
+    right = pose[:, ri, :2]
+    center = (left + right) / 2.0
+    width = np.linalg.norm(right - left, axis=-1, keepdims=True)
+    width = np.maximum(width, 1e-6)
+    return center, width
+
+
+def apply_shoulder_transform(
+    landmarks: np.ndarray,
+    center: np.ndarray,
+    width: np.ndarray,
+) -> np.ndarray:
+    """미리 구한 어깨 기준 변환(center/width)을 landmarks의 XY에 적용한다.
+
+    Args:
+        landmarks: [T, J, 3]
+        center:    [T, 2]  (shoulder_transform_params 산출)
+        width:     [T, 1]
+    Z는 건드리지 않는다 (shoulder_width 정규화와 동일).
+    """
+    out = landmarks.copy()
+    out[:, :, :2] -= center[:, np.newaxis, :]
+    out[:, :, :2] /= width[:, np.newaxis, :]
+    return out.astype(np.float32)

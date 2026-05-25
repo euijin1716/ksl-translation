@@ -207,7 +207,8 @@ class MediaPipeExtractor(BaseExtractor):
         face_bbox_arr = np.stack([b if b is not None else np.zeros(4, dtype=np.float32) for b in face_bboxes])
         presence_arr = np.array(presence_frames, dtype=bool)
 
-        resampled = abs(original_fps - target_fps) > 0.5
+        effective_fps = original_fps / frame_skip
+        resampled = frame_skip > 1
         result.pose = pose_arr
         result.left_hand = left_arr
         result.right_hand = right_arr
@@ -219,7 +220,9 @@ class MediaPipeExtractor(BaseExtractor):
         result.presence_mask = presence_arr
         result.meta = {
             "original_fps": original_fps,
-            "processed_fps": target_fps,
+            "processed_fps": effective_fps,  # 실제 처리 fps = original_fps / frame_skip (target_fps 아님)
+            "target_fps": target_fps,
+            "frame_skip": frame_skip,
             "num_frames": T,
             "resampled": resampled,
             "frame_drop_ratio": 0.0,

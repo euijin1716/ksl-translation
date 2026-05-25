@@ -220,6 +220,33 @@ class TestExtractor:
         assert result.left_hand.shape == (T, 21, 3)
         assert result.right_hand.shape == (T, 21, 3)
 
+    def test_extractor_meta_processed_fps(self, tmp_path):
+        # #1: meta.processed_fps == original_fps / frame_skip (target_fps가 아님).
+        # 실제 추출 경로(_extract_mediapipe)를 타야 하므로 MediaPipe가 초기화된 환경에서만 실행.
+        import numpy as np
+        import pytest
+        from src.preprocess.extractors.mediapipe_extractor import MediaPipeExtractor
+
+        extractor = MediaPipeExtractor(config={"target_fps": 10.0})
+        if not extractor._initialized:
+            pytest.skip("MediaPipe landmarkers unavailable; real-extraction meta untestable here")
+        import cv2
+
+        video = tmp_path / "clip.mp4"
+        writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 64))
+        for _ in range(12):
+            writer.write(np.zeros((64, 64, 3), dtype=np.uint8))
+        writer.release()
+
+        result = extractor.extract(str(video))
+        extractor.close()
+        meta = result.meta
+        assert meta.get("target_fps") == 10.0
+        assert meta.get("frame_skip") == max(1, round(meta["original_fps"] / 10.0))
+        # 핵심: processed_fps는 target(10)이 아니라 실효값 original/skip 이어야 한다
+        assert abs(meta["processed_fps"] - meta["original_fps"] / meta["frame_skip"]) < 1e-6
+        assert meta["resampled"] == (meta["frame_skip"] > 1)
+
 
 # ── 5. Normalizer ─────────────────────────────────────────────────────────────
 
@@ -238,6 +265,66 @@ class TestNormalizer:
         lm = np.random.rand(5, 21, 3).astype("float32")
         out, meta = normalize_landmarks(lm, method="none")
         assert out.shape == lm.shape
+
+    def test_normalize_shoulder_width(self):
+        # shoulder_width 정규화: 어깨(11,12) 중점이 원점으로 이동하고 메타가 기록된다.
+        import numpy as np
+        from src.preprocess.normalizers.coordinate_normalizer import normalize_landmarks
+        pose = np.random.default_rng(0).random((8, 25, 3)).astype("float32")
+        out, meta = normalize_landmarks(pose, method="shoulder_width")
+        assert out.shape == pose.shape
+        assert meta["scale_by"] == "shoulder_width"
+        assert meta["center_by"] == "shoulder_midpoint"
+        mid = (out[:, 11, :2] + out[:, 12, :2]) / 2.0
+        assert np.allclose(mid, 0.0, atol=1e-5)
+
+    def test_shoulder_transform_equivalence(self):
+        # #2: apply_shoulder_transform(pose, *params(pose)) == normalize_landmarks(shoulder_width) (회귀 방지)
+        import numpy as np
+        from src.preprocess.normalizers.coordinate_normalizer import (
+            apply_shoulder_transform,
+            normalize_landmarks,
+            shoulder_transform_params,
+        )
+        pose = np.random.default_rng(1).random((8, 25, 3)).astype("float32")
+        ref, _ = normalize_landmarks(pose, method="shoulder_width")
+        center, width = shoulder_transform_params(pose)
+        got = apply_shoulder_transform(pose, center, width)
+        assert got.shape == ref.shape
+        assert np.allclose(ref, got, atol=1e-5)
+
+    def test_face_key_shares_shoulder_frame(self):
+        # #2: face_key를 pose의 어깨 변환으로 정규화 → shape 유지, Z(깊이) 보존, finite
+        import numpy as np
+        from src.preprocess.normalizers.coordinate_normalizer import (
+            apply_shoulder_transform,
+            shoulder_transform_params,
+        )
+        rng = np.random.default_rng(2)
+        pose = rng.random((8, 25, 3)).astype("float32")
+        face = rng.random((8, 68, 3)).astype("float32")
+        center, width = shoulder_transform_params(pose)
+        out = apply_shoulder_transform(face, center, width)
+        assert out.shape == face.shape
+        assert out.dtype == np.float32
+        assert np.allclose(out[:, :, 2], face[:, :, 2])   # Z 좌표는 건드리지 않음
+        assert np.isfinite(out).all()
+
+    def test_shoulder_transform_degenerate_width(self):
+        # #2 가드: 좌우 어깨가 겹쳐 width=0이어도 1e-6로 clamp되어 NaN/inf가 없어야 한다.
+        import numpy as np
+        from src.preprocess.normalizers.coordinate_normalizer import (
+            apply_shoulder_transform,
+            shoulder_transform_params,
+        )
+        rng = np.random.default_rng(3)
+        pose = rng.random((6, 25, 3)).astype("float32")
+        pose[:, 11, :2] = pose[:, 12, :2]   # 좌우 어깨를 같은 위치로
+        face = rng.random((6, 68, 3)).astype("float32")
+        center, width = shoulder_transform_params(pose)
+        assert (width >= 1e-6).all()
+        out = apply_shoulder_transform(face, center, width)
+        assert np.isfinite(out).all()
 
 
 # ── 6. Validator ──────────────────────────────────────────────────────────────

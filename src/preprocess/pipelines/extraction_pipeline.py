@@ -13,7 +13,11 @@ from typing import Any
 from ...data.schema import KSLSample
 from ..croppers.roi_cropper import ROICropper
 from ..extractors.mediapipe_extractor import MediaPipeExtractor
-from ..normalizers.coordinate_normalizer import normalize_landmarks
+from ..normalizers.coordinate_normalizer import (
+    apply_shoulder_transform,
+    normalize_landmarks,
+    shoulder_transform_params,
+)
 from ..packers.landmark_packer import LandmarkPacker
 from ..validators.shape_validator import validate_extraction_result
 
@@ -75,8 +79,18 @@ class ExtractionPipeline:
         result = self.extractor.extract(str(video_path))
 
         # 좌표 정규화
-        if result.pose is not None:
+        if self.normalize_method == "shoulder_width" and result.pose is not None:
+            # pose와 face_key를 동일한 어깨 기준 좌표계로 정규화 (몸 기준 일관성).
+            # face_key는 어깨 점이 없으므로 pose에서 구한 변환을 그대로 적용한다.
+            center, width = shoulder_transform_params(result.pose)
+            result.pose = apply_shoulder_transform(result.pose, center, width)
+            if result.face_key_subset is not None:
+                result.face_key_subset = apply_shoulder_transform(result.face_key_subset, center, width)
+        elif result.pose is not None:
             result.pose, _ = normalize_landmarks(result.pose, self.normalize_method)
+            if result.face_key_subset is not None:
+                result.face_key_subset, _ = normalize_landmarks(result.face_key_subset, method="bbox")
+
         if result.left_hand is not None:
             result.left_hand, _ = normalize_landmarks(result.left_hand, method="bbox")
         if result.right_hand is not None:
