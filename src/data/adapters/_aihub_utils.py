@@ -15,8 +15,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _VIDEO_SUFFIX_PRIORITY = {
-    "d": 0,  # default/front view in this dataset naming pattern
-    "f": 1,
+    "f": 0,  # 정면(front): 얼굴/손이 가장 잘 보임. 데이터셋 공식 키포인트 주석도 _F 기준.
+    "d": 1,  # 이전 기본값이었으나 사선/하향 뷰라 MediaPipe face 검출이 대부분 실패.
     "c": 2,
     "l": 3,
     "r": 4,
