@@ -45,6 +45,7 @@ class ExtractionPipeline:
         self.crop_missing_from_saved_bbox = config.get("crop_missing_from_saved_bbox", True)
         self.normalize_method = config.get("normalize_method", "shoulder_width")
         self.skip_existing = config.get("skip_existing", True)
+        self.low_face_presence_threshold = float(config.get("low_face_presence_threshold", 0.1))
         self.progress_every = int(config.get("progress_every", 25))
         self.video_roots = [
             Path(p) for p in config.get(
@@ -103,6 +104,14 @@ class ExtractionPipeline:
                 f"[{sample.sample_id}] Extraction validation failed: {report.errors}"
             )
             sample.quality_flags.extend([f"extraction_error:{e}" for e in report.errors])
+
+        # 얼굴 검출 실패(예: 정면이 아닌 뷰로 폴백)를 매니페스트에 명시적으로 남긴다.
+        # validator가 계산한 presence_rates[3](얼굴 검출 프레임 비율)을 그대로 사용한다.
+        presence_rates = report.stats.get("presence_rates")
+        if presence_rates and len(presence_rates) >= 4:
+            face_rate = float(presence_rates[3])
+            if face_rate < self.low_face_presence_threshold:
+                sample.quality_flags.append(f"low_face_presence:{face_rate:.2f}")
 
         # 저장
         kp_dir = self.packer.pack(sample.sample_id, result)

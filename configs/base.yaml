@@ -22,6 +22,7 @@ preprocess:
   crop_missing_from_saved_bbox: true
   save_face_crop: false
   normalize_method: shoulder_width
+  low_face_presence_threshold: 0.1   # face 검출 프레임 비율이 이 값 미만이면 quality_flag(low_face_presence) 표시
   extractor_config:
     model_asset_path_hand: data/mediapipe_models/hand_landmarker.task
     model_asset_path_face: data/mediapipe_models/face_landmarker.task

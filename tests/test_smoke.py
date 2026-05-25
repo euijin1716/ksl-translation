@@ -355,6 +355,55 @@ class TestValidator:
         assert not report.passed
 
 
+# ── 6b. Extraction Pipeline: low_face_presence flag ───────────────────────────
+
+class TestExtractionPipeline:
+    @staticmethod
+    def _make_sample(sid):
+        from src.data.schema import KSLSample
+        return KSLSample(
+            sample_id=sid, dataset_name="test", domain="help", scenario_id="sc",
+            turn_id=0, utterance_id=sid, signer_id="S1", split_group="train",
+            video_path="nonexistent.mp4", fps=30.0, num_frames=20,
+            korean_text="테스트", gloss_tokens=None, nms_labels=None,
+            intent="help", intent_source="auto_estimated",
+        )
+
+    @staticmethod
+    def _make_result(face_present: bool):
+        import numpy as np
+        from src.preprocess.extractors.base_extractor import ExtractionResult
+        T = 20
+        presence = np.ones((T, 4), dtype=bool)
+        presence[:, 3] = face_present   # 얼굴 채널만 토글
+        return ExtractionResult(
+            pose=np.random.rand(T, 25, 3).astype("float32"),
+            left_hand=np.random.rand(T, 21, 3).astype("float32"),
+            right_hand=np.random.rand(T, 21, 3).astype("float32"),
+            face_blendshape=np.zeros((T, 52), dtype="float32"),
+            face_key_subset=np.zeros((T, 68, 3), dtype="float32"),
+            presence_mask=presence,
+            meta={"processed_frame_indices": list(range(T))},
+        )
+
+    def test_low_face_presence_flag(self, tmp_path):
+        from src.preprocess.pipelines.extraction_pipeline import ExtractionPipeline
+        pipe = ExtractionPipeline({
+            "keypoint_root": str(tmp_path / "kp"),
+            "enable_crops": False,
+            "skip_existing": False,
+            "normalize_method": "shoulder_width",
+        })
+        # 얼굴 검출 실패(presence=0) → low_face_presence 플래그가 붙어야 함
+        pipe.extractor.extract = lambda _vp: self._make_result(face_present=False)
+        dead = pipe.process(self._make_sample("face_dead"))
+        assert any(f.startswith("low_face_presence") for f in dead.quality_flags), dead.quality_flags
+        # 얼굴 정상(presence=1.0) → 플래그가 없어야 함
+        pipe.extractor.extract = lambda _vp: self._make_result(face_present=True)
+        ok = pipe.process(self._make_sample("face_ok"))
+        assert not any(f.startswith("low_face_presence") for f in ok.quality_flags), ok.quality_flags
+
+
 # ── 7. Model Forward Pass ─────────────────────────────────────────────────────
 
 class TestModel:
