@@ -30,16 +30,30 @@ except ImportError:
         "Install with: pip install mediapipe"
     )
 
+# face_key_subset 기본 인덱스 (MediaPipe FaceMesh). 좌우 대칭으로 NMS 부위(눈썹/눈/코/입/볼)
+# 를 커버하는 68점. 옛 list(range(68))은 좌측편중이라 교체. 상세: tmp/face_key_subset_indices_curated.py
+_FACE_KEY_SUBSET_INDICES_DEFAULT = [
+    70, 63, 105, 66, 107,  336, 296, 334, 293, 300,  55, 285,   # 눈썹 L/R + 미간
+    33, 160, 159, 158, 133, 153, 145, 144,                       # 눈 L
+    263, 387, 386, 385, 362, 380, 374, 373,                      # 눈 R
+    168, 6, 195, 5, 4, 1, 2, 94,                                 # 코
+    61, 40, 37, 0, 267, 270, 291, 321, 314, 17, 84, 91,         # 입술 바깥
+    78, 81, 13, 311, 308, 402, 14, 178,                         # 입술 안쪽
+    205, 50, 116, 36,  425, 280, 345, 266,                      # 볼 L/R
+    9, 152, 172, 397,                                           # 미간/턱/턱선
+]
+
 # 추출기 설정 기본값
 _DEFAULTS: dict[str, Any] = {
-    "model_asset_path_hand": None,     # None이면 기본 번들 모델 사용
-    "model_asset_path_face": None,
+    "model_asset_path_hand": None,         # None이면 기본 번들 모델 사용
+    "model_asset_path_face": None,         # (legacy FaceLandmarker — 현재 face는 holistic 사용)
+    "model_asset_path_holistic": None,     # face 검출용 HolisticLandmarker 모델
     "model_asset_path_pose": None,
     "num_hands": 2,
     "face_blendshape": True,
     "pose_upper_body_only": True,      # A-002
     "pose_joints": 25,                 # 상반신 서브셋 크기 (A-002)
-    "face_key_subset_indices": list(range(68)),  # 주요 얼굴 랜드마크
+    "face_key_subset_indices": _FACE_KEY_SUBSET_INDICES_DEFAULT,
     "target_fps": 25.0,                # A-003
     "save_face_crop": False,           # A-005
 }
@@ -59,6 +73,7 @@ class MediaPipeExtractor(BaseExtractor):
         self._initialized = False
         self._hand_landmarker = None
         self._face_landmarker = None
+        self._holistic_landmarker = None
         self._pose_landmarker = None
         # 여러 영상을 배치 처리할 때 타임스탬프가 단조 증가를 유지하기 위한
         # 전역 오프셋. 각 영상 처리 후 마지막 타임스탬프 + 여유분으로 갱신된다.
@@ -88,15 +103,16 @@ class MediaPipeExtractor(BaseExtractor):
             )
             self._hand_landmarker = mp_vision.HandLandmarker.create_from_options(hand_opts)
 
-            # Face Landmarker
-            face_opts = mp_vision.FaceLandmarkerOptions(
+            # Face: HolisticLandmarker로 검출 (분리형 FaceLandmarker는 와이드샷의 작은 얼굴
+            # 검출에 실패 → Holistic이 내부에서 pose-ROI로 얼굴을 크롭하므로 검출됨).
+            holistic_opts = mp_vision.HolisticLandmarkerOptions(
                 base_options=base_options_cls(
-                    model_asset_path=self.config["model_asset_path_face"]
+                    model_asset_path=self.config["model_asset_path_holistic"]
                 ),
                 running_mode=running_mode.VIDEO,
                 output_face_blendshapes=self.config["face_blendshape"],
             )
-            self._face_landmarker = mp_vision.FaceLandmarker.create_from_options(face_opts)
+            self._holistic_landmarker = mp_vision.HolisticLandmarker.create_from_options(holistic_opts)
 
             # Pose Landmarker
             pose_opts = mp_vision.PoseLandmarkerOptions(
@@ -167,9 +183,9 @@ class MediaPipeExtractor(BaseExtractor):
             hand_result = self._hand_landmarker.detect_for_video(mp_image, timestamp_ms)
             left_lm, right_lm = self._parse_hands(hand_result)
 
-            # Face
-            face_result = self._face_landmarker.detect_for_video(mp_image, timestamp_ms)
-            face_bs, face_key = self._parse_face(face_result)
+            # Face (HolisticLandmarker: pose-ROI 크롭으로 작은 얼굴도 검출)
+            holistic_result = self._holistic_landmarker.detect_for_video(mp_image, timestamp_ms)
+            face_bs, face_key = self._parse_holistic_face(holistic_result)
 
             pose_frames.append(pose_lm)
             left_hand_frames.append(left_lm)
@@ -262,6 +278,37 @@ class MediaPipeExtractor(BaseExtractor):
             bs_arr = np.zeros(_FACE_BLENDSHAPE_DIM, dtype=np.float32)
         return bs_arr, key_arr
 
+    def _parse_holistic_face(self, result: Any) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """HolisticLandmarker 결과에서 face 랜드마크(subset) + blendshape를 추출한다.
+
+        Holistic은 1인 검출이라 face_landmarks가 평면 list[landmark]이지만,
+        MediaPipe 버전에 따라 중첩(list[list])일 수 있어 둘 다 대응한다.
+        얼굴 미검출 시 (None, None)을 반환한다.
+        """
+        fl = getattr(result, "face_landmarks", None)
+        if not fl:
+            return None, None
+        landmarks = fl if hasattr(fl[0], "x") else (fl[0] if fl[0] else None)
+        if not landmarks:
+            return None, None
+        indices = self.config["face_key_subset_indices"]
+        n = len(landmarks)
+        if any(j >= n for j in indices):
+            return None, None
+        key_arr = np.array(
+            [[landmarks[j].x, landmarks[j].y, landmarks[j].z] for j in indices],
+            dtype=np.float32,
+        )
+        bs = getattr(result, "face_blendshapes", None)
+        if bs:
+            cats = bs if hasattr(bs[0], "score") else bs[0]
+            bs_arr = np.array([c.score for c in cats], dtype=np.float32)
+            if bs_arr.shape[0] != _FACE_BLENDSHAPE_DIM:
+                bs_arr = np.zeros(_FACE_BLENDSHAPE_DIM, dtype=np.float32)
+        else:
+            bs_arr = np.zeros(_FACE_BLENDSHAPE_DIM, dtype=np.float32)
+        return bs_arr, key_arr
+
     def _landmarks_to_bbox(
         self,
         landmarks: np.ndarray | None,
@@ -315,5 +362,7 @@ class MediaPipeExtractor(BaseExtractor):
             self._hand_landmarker.close()
         if self._face_landmarker:
             self._face_landmarker.close()
+        if self._holistic_landmarker:
+            self._holistic_landmarker.close()
         if self._pose_landmarker:
             self._pose_landmarker.close()

@@ -247,6 +247,40 @@ class TestExtractor:
         assert abs(meta["processed_fps"] - meta["original_fps"] / meta["frame_skip"]) < 1e-6
         assert meta["resampled"] == (meta["frame_skip"] > 1)
 
+    def test_parse_holistic_face(self):
+        # HolisticLandmarker 결과 파싱(평면/중첩/빈 결과) — MediaPipe 없이 모의 객체로 검증
+        import numpy as np
+        from src.preprocess.extractors.mediapipe_extractor import (
+            MediaPipeExtractor, _FACE_BLENDSHAPE_DIM)
+        ext = MediaPipeExtractor()
+        n_idx = len(ext.config["face_key_subset_indices"])
+
+        class LM:
+            def __init__(self, x, y, z): self.x, self.y, self.z = x, y, z
+        class Cat:
+            def __init__(self, score): self.score = score
+
+        flat_lm = [LM(0.01 * i, 0.02 * i, 0.03 * i) for i in range(478)]
+        flat_bs = [Cat(0.01 * i) for i in range(_FACE_BLENDSHAPE_DIM)]
+
+        class ResFlat:        # Holistic 1인 = 평면 list
+            face_landmarks = flat_lm
+            face_blendshapes = flat_bs
+        bs, key = ext._parse_holistic_face(ResFlat())
+        assert key.shape == (n_idx, 3)
+        assert bs.shape == (_FACE_BLENDSHAPE_DIM,)
+
+        class ResNested:      # 버전에 따라 중첩일 수도
+            face_landmarks = [flat_lm]
+            face_blendshapes = [flat_bs]
+        bs2, key2 = ext._parse_holistic_face(ResNested())
+        assert key2.shape == (n_idx, 3) and bs2.shape == (_FACE_BLENDSHAPE_DIM,)
+
+        class ResEmpty:       # 얼굴 미검출
+            face_landmarks = []
+            face_blendshapes = []
+        assert ext._parse_holistic_face(ResEmpty()) == (None, None)
+
 
 # ── 5. Normalizer ─────────────────────────────────────────────────────────────
 
