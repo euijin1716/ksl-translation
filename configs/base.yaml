@@ -113,7 +113,7 @@ train:
   loss_weight_draft: 1.0
 
 llm:
-  provider: dummy     # "dummy" | "claude" | "openai"
+  provider: claude     # "dummy" | "claude" | "openai"
   model: claude-sonnet-4-6
   max_tokens: 512
   max_prev_turns: 5
