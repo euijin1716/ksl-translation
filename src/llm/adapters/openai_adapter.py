@@ -1,7 +1,6 @@
-"""Claude (Anthropic) LLM adapter.
+"""OpenAI ChatCompletion LLM adapter.
 
-anthropic SDK가 설치되어 있어야 한다.
-SYSTEM_PROMPT에 prompt caching을 적용해 비용과 지연을 줄인다.
+openai SDK가 설치되어 있어야 한다.
 API 오류 시 지수 백오프로 최대 max_retries회 재시도한다.
 """
 
@@ -17,21 +16,20 @@ from ..response_parser import parse_response
 logger = logging.getLogger(__name__)
 
 try:
-    import anthropic
-    _ANTHROPIC_AVAILABLE = True
+    import openai
+    _OPENAI_AVAILABLE = True
 except ImportError:
-    _ANTHROPIC_AVAILABLE = False
+    _OPENAI_AVAILABLE = False
 
-# 재시도 대상 에러 타입 (네트워크/서버 일시 오류)
-_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
+_RETRYABLE_STATUS = {429, 500, 502, 503}
 
 
-class ClaudeAdapter(LLMProvider):
-    """Claude API를 사용하는 LLM adapter.
+class OpenAIAdapter(LLMProvider):
+    """OpenAI ChatCompletion API를 사용하는 LLM adapter.
 
     Args:
-        model: Claude 모델 ID
-        api_key: Anthropic API key (없으면 환경변수 ANTHROPIC_API_KEY 사용)
+        model: OpenAI 모델 ID (기본: gpt-4o)
+        api_key: OpenAI API key (없으면 환경변수 OPENAI_API_KEY 사용)
         max_tokens: 최대 출력 토큰 수
         max_retries: API 오류 시 최대 재시도 횟수
         retry_base_delay: 재시도 초기 대기 시간(초), 지수 백오프 적용
@@ -39,28 +37,19 @@ class ClaudeAdapter(LLMProvider):
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
+        model: str = "gpt-4o",
         api_key: str | None = None,
         max_tokens: int = 512,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
     ) -> None:
-        if not _ANTHROPIC_AVAILABLE:
-            raise ImportError("anthropic package not installed. pip install anthropic")
+        if not _OPENAI_AVAILABLE:
+            raise ImportError("openai package not installed. pip install openai")
         self.model = model
         self.max_tokens = max_tokens
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
-        self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-
-        # 시스템 프롬프트는 세션 내 고정이므로 prompt caching 적용
-        self._cached_system = [
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        self.client = openai.OpenAI(api_key=api_key) if api_key else openai.OpenAI()
 
     def correct(self, llm_input: LLMInput) -> LLMOutput:
         prompt = build_prompt(llm_input)
@@ -68,13 +57,16 @@ class ClaudeAdapter(LLMProvider):
 
         for attempt in range(self.max_retries):
             try:
-                message = self.client.messages.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
-                    system=self._cached_system,
-                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
                 )
-                raw = message.content[0].text
+                raw = response.choices[0].message.content or ""
                 return parse_response(raw, fallback_text=llm_input.korean_draft)
 
             except Exception as e:
@@ -84,12 +76,12 @@ class ClaudeAdapter(LLMProvider):
                     break
                 delay = self.retry_base_delay * (2 ** attempt)
                 logger.warning(
-                    "Claude API error (attempt %d/%d): %s. Retrying in %.1fs.",
+                    "OpenAI API error (attempt %d/%d): %s. Retrying in %.1fs.",
                     attempt + 1, self.max_retries, e, delay,
                 )
                 time.sleep(delay)
 
-        logger.error("Claude API failed after %d attempts: %s", self.max_retries, last_exc)
+        logger.error("OpenAI API failed after %d attempts: %s", self.max_retries, last_exc)
         return LLMOutput(
             final_text=llm_input.korean_draft,
             normalization_notes=f"api_error: {last_exc}",
@@ -97,9 +89,9 @@ class ClaudeAdapter(LLMProvider):
 
     def health_check(self) -> bool:
         try:
-            self.client.messages.create(
+            self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=10,
+                max_tokens=5,
                 messages=[{"role": "user", "content": "ping"}],
             )
             return True
@@ -108,6 +100,5 @@ class ClaudeAdapter(LLMProvider):
 
 
 def _is_transient(exc: Exception) -> bool:
-    """네트워크 일시 오류 여부를 판단한다."""
     name = type(exc).__name__.lower()
-    return any(k in name for k in ("timeout", "connection", "network", "overloaded"))
+    return any(k in name for k in ("timeout", "connection", "network"))

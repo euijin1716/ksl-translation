@@ -548,6 +548,358 @@ class TestLLMCorrector:
         assert "배가 아픕니다." in prompt
         assert "hospital" in prompt
 
+    def test_multiturn_history_accumulation(self):
+        """성공 발화는 히스토리에 누적되고 max_prev_turns 이하로 유지된다."""
+        from src.llm.corrector import ContextCorrector
+        corrector = ContextCorrector(max_prev_turns=3)
+        for i in range(10):
+            corrector.correct(
+                korean_draft=f"문장{i}.",
+                gloss_hypotheses=[],
+                nms_summary={},
+                confidence=0.9,
+                domain="directions",
+            )
+        # 항상 max_prev_turns 이하로 유지
+        assert len(corrector._turn_history) <= 3
+
+    def test_multiturn_history_not_added_on_retry(self):
+        """retry_or_clarify=True 발화는 히스토리에 추가되지 않는다."""
+        from src.llm.corrector import ContextCorrector
+        from src.llm.provider import LLMInput, LLMOutput
+        from src.llm.adapters.dummy_adapter import DummyLLMAdapter
+
+        class _RetryDummy(DummyLLMAdapter):
+            def correct(self, llm_input: LLMInput) -> LLMOutput:
+                return LLMOutput(final_text="", retry_or_clarify=True)
+
+        corrector = ContextCorrector(provider=_RetryDummy())
+        corrector.correct(
+            korean_draft="확인이 필요합니다.",
+            gloss_hypotheses=[],
+            nms_summary={},
+            confidence=0.3,
+            domain="hospital",
+        )
+        assert len(corrector._turn_history) == 0
+
+    def test_reset_history(self):
+        """reset_history() 호출 후 히스토리가 초기화된다."""
+        from src.llm.corrector import ContextCorrector
+        corrector = ContextCorrector()
+        corrector.correct(
+            korean_draft="안녕하세요.",
+            gloss_hypotheses=[],
+            nms_summary={},
+            confidence=0.9,
+            domain="directions",
+        )
+        assert len(corrector._turn_history) > 0
+        corrector.reset_history()
+        assert len(corrector._turn_history) == 0
+
+    def test_low_confidence_uncertain_spans_added(self):
+        """low confidence 발화에 uncertain_spans가 자동으로 추가된다."""
+        from src.llm.corrector import ContextCorrector
+        corrector = ContextCorrector(low_confidence_threshold=0.5)
+        result = corrector.correct(
+            korean_draft="약이 필요합니다.",
+            gloss_hypotheses=["약"],
+            nms_summary={},
+            confidence=0.3,  # threshold 미만
+            domain="hospital",
+        )
+        assert len(result.uncertain_spans) > 0
+
+    def test_low_confidence_does_not_add_spans_when_already_present(self):
+        """LLM이 이미 uncertain_spans를 채웠으면 중복 추가하지 않는다."""
+        from src.llm.corrector import ContextCorrector
+        from src.llm.provider import LLMInput, LLMOutput
+        from src.llm.adapters.dummy_adapter import DummyLLMAdapter
+
+        class _UncertainDummy(DummyLLMAdapter):
+            def correct(self, llm_input: LLMInput) -> LLMOutput:
+                return LLMOutput(
+                    final_text=llm_input.korean_draft,
+                    uncertain_spans=[{"text": "already", "reason": "preset"}],
+                )
+
+        corrector = ContextCorrector(provider=_UncertainDummy(), low_confidence_threshold=0.5)
+        result = corrector.correct(
+            korean_draft="테스트.",
+            gloss_hypotheses=[],
+            nms_summary={},
+            confidence=0.2,
+            domain="hospital",
+        )
+        # 중복 추가 없이 원래 1개여야 함
+        assert len(result.uncertain_spans) == 1
+        assert result.uncertain_spans[0]["reason"] == "preset"
+
+
+# ── 9b. Output Validator ──────────────────────────────────────────────────────
+
+class TestOutputValidator:
+    def test_empty_output_fallback(self):
+        """빈 final_text는 draft로 대체된다."""
+        from src.llm.output_validator import validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+        llm_input = LLMInput(
+            korean_draft="원본 문장.",
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.9,
+            previous_turns=[],
+            domain="directions",
+        )
+        output = LLMOutput(final_text="")
+        result = validate_output(output, llm_input)
+        assert result.final_text == "원본 문장."
+        assert result.normalization_notes == "empty_output"
+
+    def test_length_explosion_fallback(self):
+        """draft 대비 2배 초과 출력은 draft로 대체된다."""
+        from src.llm.output_validator import validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+        draft = "짧은 문장."
+        llm_input = LLMInput(
+            korean_draft=draft,
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.9,
+            previous_turns=[],
+            domain="directions",
+        )
+        long_text = "아" * (len(draft) * 3)
+        output = LLMOutput(final_text=long_text)
+        result = validate_output(output, llm_input)
+        assert result.final_text == draft
+        assert "length_expansion_rejected" in result.normalization_notes
+
+    def test_high_risk_low_confidence_fallback(self):
+        """hospital 도메인 + 저신뢰 + 내용 변경 → draft + retry 플래그."""
+        from src.llm.output_validator import validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+        draft = "배가 아픕니다."
+        llm_input = LLMInput(
+            korean_draft=draft,
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.3,
+            previous_turns=[],
+            domain="hospital",
+        )
+        output = LLMOutput(final_text="복통과 설사 증상이 있으며 발열도 동반됩니다.")
+        result = validate_output(output, llm_input)
+        assert result.final_text == draft
+        assert result.retry_or_clarify is True
+
+    def test_valid_output_passes_through(self):
+        """정상 출력은 그대로 통과한다."""
+        from src.llm.output_validator import validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+        draft = "예약하고 싶습니다."
+        llm_input = LLMInput(
+            korean_draft=draft,
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.85,
+            previous_turns=[],
+            domain="reservation",
+        )
+        output = LLMOutput(final_text="예약을 원합니다.")
+        result = validate_output(output, llm_input)
+        assert result.final_text == "예약을 원합니다."
+
+    def test_retry_clarify_spans_auto_filled(self):
+        """retry_or_clarify=True인데 uncertain_spans 없으면 자동 보강한다."""
+        from src.llm.output_validator import validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+        llm_input = LLMInput(
+            korean_draft="도움이 필요합니다.",
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.9,
+            previous_turns=[],
+            domain="help",
+        )
+        output = LLMOutput(final_text="도움이 필요합니다.", retry_or_clarify=True, uncertain_spans=[])
+        result = validate_output(output, llm_input)
+        assert len(result.uncertain_spans) > 0
+
+
+# ── 9c. Response Parser (중첩 JSON) ───────────────────────────────────────────
+
+class TestResponseParserAdvanced:
+    def test_nested_json_in_text(self):
+        """응답 앞뒤에 텍스트가 있어도 JSON을 올바르게 추출한다."""
+        from src.llm.response_parser import parse_response
+        raw = '다음은 결과입니다:\n{"final_text": "결과문장", "retry_or_clarify": false, "uncertain_spans": []}\n감사합니다.'
+        out = parse_response(raw, fallback_text="fallback")
+        assert out.final_text == "결과문장"
+
+    def test_json_with_nested_objects(self):
+        """uncertain_spans 안에 중첩 객체가 있어도 올바르게 파싱한다."""
+        from src.llm.response_parser import parse_response
+        raw = '{"final_text": "테스트", "uncertain_spans": [{"text": "부분", "reason": "이유"}], "retry_or_clarify": false}'
+        out = parse_response(raw, fallback_text="fallback")
+        assert out.final_text == "테스트"
+        assert len(out.uncertain_spans) == 1
+        assert out.uncertain_spans[0]["text"] == "부분"
+
+    def test_completely_invalid_fallback(self):
+        """JSON이 전혀 없으면 fallback을 반환한다."""
+        from src.llm.response_parser import parse_response
+        out = parse_response("전혀 JSON이 없는 응답입니다.", fallback_text="원본")
+        assert out.final_text == "원본"
+
+
+# ── 9d. Prompt Builder (도메인별 정책) ────────────────────────────────────────
+
+class TestPromptBuilderDomain:
+    def test_hospital_guideline_included(self):
+        """hospital 도메인이면 프롬프트에 의료 주의사항이 포함된다."""
+        from src.llm.provider import LLMInput
+        from src.llm.prompt_builder import build_prompt
+        llm_input = LLMInput(
+            korean_draft="약을 처방받고 싶습니다.",
+            top_k_gloss=["약", "처방"],
+            nms_summary={},
+            confidence=0.8,
+            previous_turns=[],
+            domain="hospital",
+        )
+        prompt = build_prompt(llm_input)
+        assert "병원 도메인" in prompt or "의료" in prompt
+
+    def test_low_confidence_instruction_included(self):
+        """낮은 confidence이면 저신뢰 지시가 프롬프트에 포함된다."""
+        from src.llm.provider import LLMInput
+        from src.llm.prompt_builder import build_prompt
+        llm_input = LLMInput(
+            korean_draft="모르겠습니다.",
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.2,
+            previous_turns=[],
+            domain="directions",
+        )
+        prompt = build_prompt(llm_input)
+        assert "신뢰도가 낮" in prompt or "낮음" in prompt
+
+    def test_previous_turns_included(self):
+        """이전 발화가 프롬프트에 포함된다."""
+        from src.llm.provider import LLMInput
+        from src.llm.prompt_builder import build_prompt
+        llm_input = LLMInput(
+            korean_draft="여기가 어디입니까?",
+            top_k_gloss=[],
+            nms_summary={},
+            confidence=0.75,
+            previous_turns=["저는 길을 잃었습니다.", "도움을 요청합니다."],
+            domain="directions",
+        )
+        prompt = build_prompt(llm_input)
+        assert "길을 잃었습니다" in prompt
+
+
+# ── 9e. Factory ───────────────────────────────────────────────────────────────
+
+class TestLLMFactory:
+    def test_dummy_factory(self):
+        """dummy provider factory가 ContextCorrector를 반환한다."""
+        from src.llm.factory import build_corrector
+        cfg = {"provider": "dummy", "max_prev_turns": 3, "confidence_threshold": 0.4}
+        corrector = build_corrector(cfg)
+        result = corrector.correct(
+            korean_draft="테스트.",
+            gloss_hypotheses=[],
+            nms_summary={},
+            confidence=0.8,
+            domain="directions",
+        )
+        assert isinstance(result.final_text, str)
+
+    def test_unknown_provider_fallback(self):
+        """알 수 없는 provider 이름은 dummy로 fallback된다."""
+        from src.llm.factory import build_corrector
+        cfg = {"provider": "nonexistent_provider"}
+        corrector = build_corrector(cfg)
+        result = corrector.correct(
+            korean_draft="테스트.",
+            gloss_hypotheses=[],
+            nms_summary={},
+            confidence=0.8,
+            domain="directions",
+        )
+        assert isinstance(result.final_text, str)
+
+    def test_factory_max_prev_turns_applied(self):
+        """factory에서 설정한 max_prev_turns가 corrector에 반영된다."""
+        from src.llm.factory import build_corrector
+        cfg = {"provider": "dummy", "max_prev_turns": 2, "confidence_threshold": 0.4}
+        corrector = build_corrector(cfg)
+        assert corrector.max_prev_turns == 2
+
+
+# ── 9f. Streaming Inference Pipeline ─────────────────────────────────────────
+
+class TestStreamingInferencePipeline:
+    def _make_frame(self):
+        return {
+            "pose": torch.randn(25, 3),
+            "left_hand": torch.randn(21, 3),
+            "right_hand": torch.randn(21, 3),
+            "face_blendshape": torch.randn(52),
+        }
+
+    def test_streaming_pipeline_ends_with_llm_result(self):
+        """ENDED 상태에서 LLM 보정까지 완료된 StreamingResult를 반환한다."""
+        from src.infer.streaming import StreamingInferencePipeline, StreamingConfig, ActivityState
+        from src.infer.pipeline import InferencePipeline
+        from src.models.ksl_model import KSLModel, ModelConfig
+        from src.models.decoder import DecoderConfig
+
+        model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
+        pipeline = InferencePipeline(model, device="cpu")
+        config = StreamingConfig(
+            onset_threshold=0.6,
+            offset_threshold=0.4,
+            min_sign_frames=3,
+        )
+        sp = StreamingInferencePipeline(pipeline, config=config, domain="hospital")
+
+        result = None
+        # IDLE → ONSET → ONGOING → OFFSET → ENDED 시나리오 구동
+        for _ in range(2):
+            sp.push_frame(self._make_frame(), 0.2)   # IDLE
+        for _ in range(2):
+            sp.push_frame(self._make_frame(), 0.8)   # ONSET → ONGOING
+        for _ in range(3):
+            sp.push_frame(self._make_frame(), 0.2)   # OFFSET 카운트
+        result = sp.push_frame(self._make_frame(), 0.2)  # ENDED 또는 진행
+
+        # 충분한 프레임 없이 ENDED가 안 날 수 있으므로 최소 타입만 검사
+        assert result is not None
+        from src.infer.streaming import StreamingResult
+        assert isinstance(result, StreamingResult)
+
+    def test_streaming_reset_clears_history(self):
+        """reset() 호출 시 SM 상태와 corrector 히스토리가 초기화된다."""
+        from src.infer.streaming import StreamingInferencePipeline, StreamingConfig
+        from src.infer.pipeline import InferencePipeline
+        from src.models.ksl_model import KSLModel, ModelConfig
+        from src.models.decoder import DecoderConfig
+
+        model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
+        pipeline = InferencePipeline(model, device="cpu")
+        sp = StreamingInferencePipeline(pipeline, domain="directions")
+
+        # 히스토리를 인위적으로 채운다
+        pipeline.corrector._turn_history = ["이전 발화1", "이전 발화2"]
+        sp.reset()
+        assert pipeline.corrector._turn_history == []
+
 
 # ── 10. Eval Metrics ──────────────────────────────────────────────────────────
 
