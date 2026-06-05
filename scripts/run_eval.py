@@ -160,6 +160,7 @@ def main():
         fusion=_dataclass_from_dict(FusionConfig, model_cfg.get("fusion", {})),
         heads=heads_cfg,
         decoder=decoder_cfg,
+        enable_hand_visual=model_cfg.get("enable_hand_visual", False),
     )
     model = KSLModel(model_config)
 

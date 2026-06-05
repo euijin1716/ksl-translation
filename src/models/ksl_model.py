@@ -29,6 +29,9 @@ class ModelConfig:
     fusion: FusionConfig = field(default_factory=FusionConfig)
     heads: HeadsConfig = field(default_factory=HeadsConfig)
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
+    # E2(Hand visual) 스트림 사용 여부. crop-free(--skip_crops) 설계에서는
+    # crop 입력이 영구 zeros가 되므로 기본 off. config에서 true로 켤 수 있다.
+    enable_hand_visual: bool = False
 
 
 class KSLModel(nn.Module):
@@ -56,14 +59,20 @@ class KSLModel(nn.Module):
         # ── 스트림 인코더 ────────────────────────────────────────────────────
         self.landmark_encoder = LandmarkEncoder(c.landmark)
 
-        self.hand_encoder: HandVisualEncoder = HandVisualEncoder(c.hand_visual)
+        # E2(Hand visual): 기본 off. enable 시에만 인코더를 생성하고 fusion 스트림에 포함한다.
+        # off면 hand_encoder=None, fusion KV는 face(E3)만 남는다.
+        self.enable_hand_visual: bool = bool(c.enable_hand_visual)
+        self.hand_encoder: HandVisualEncoder | None = (
+            HandVisualEncoder(c.hand_visual) if self.enable_hand_visual else None
+        )
 
         self.face_encoder: FaceExprEncoder = FaceExprEncoder(c.face_expr)
 
         # ── Fusion ──────────────────────────────────────────────────────────
-        # stream_dims은 실제로 사용하는 스트림에 맞게 설정
+        # stream_dims은 실제로 사용하는 스트림에 맞게 설정 (E2는 enable 시에만 포함)
         stream_dims = [c.landmark.d_model]
-        stream_dims.append(c.hand_visual.d_model)
+        if self.enable_hand_visual:
+            stream_dims.append(c.hand_visual.d_model)
         stream_dims.append(c.face_expr.d_model)
 
         fusion_cfg = FusionConfig(
@@ -123,17 +132,19 @@ class KSLModel(nn.Module):
 
         streams = [lm_feat]
 
-        # ── Hand visual stream ─────────────────────────────────────────────
-        if left_hand_crop is not None and right_hand_crop is not None:
-            hand_feat = self.hand_encoder(
-                left_hand_crop, right_hand_crop, src_key_padding_mask
-            )
-        else:
-            # Keep fusion shape stable when crop tensors are unavailable.
-            hand_feat = torch.zeros(
-                B, T, self.config.hand_visual.d_model, device=pose.device
-            )
-        streams.append(hand_feat)
+        # ── Hand visual stream (E2) ────────────────────────────────────────
+        # enable_hand_visual=false(기본)면 스트림 자체를 제외 → fusion KV는 face(E3)만.
+        # true인데 crop이 없으면 fusion 형태 유지를 위해 zeros로 채운다.
+        if self.enable_hand_visual:
+            if left_hand_crop is not None and right_hand_crop is not None:
+                hand_feat = self.hand_encoder(
+                    left_hand_crop, right_hand_crop, src_key_padding_mask
+                )
+            else:
+                hand_feat = torch.zeros(
+                    B, T, self.config.hand_visual.d_model, device=pose.device
+                )
+            streams.append(hand_feat)
 
         # ── Face expression stream ─────────────────────────────────────────
         face_feat = self.face_encoder(face_blendshape, src_key_padding_mask)

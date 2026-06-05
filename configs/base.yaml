@@ -36,6 +36,9 @@ preprocess:
 
 model:
   stage: C
+  # E2(Hand visual) 스트림 사용 여부. crop-free(--skip_crops) 설계라 기본 false.
+  # false면 fusion KV는 face(E3)만 남는다. true로 켜면 hand crop 스트림이 복원된다.
+  enable_hand_visual: false
   landmark:
     pose_joints: 25
     hand_joints: 21

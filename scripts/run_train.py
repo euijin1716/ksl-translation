@@ -292,6 +292,7 @@ def main():
         fusion=_dataclass_from_dict(FusionConfig, mc.get("fusion", {})),
         heads=heads_cfg,
         decoder=decoder_cfg,
+        enable_hand_visual=mc.get("enable_hand_visual", False),
     )
     logger.info(
         "Model config: stage=%s gloss_vocab_size=%s max_seq_len=%s",

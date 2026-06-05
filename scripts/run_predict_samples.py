@@ -33,6 +33,12 @@ def parse_args():
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--draft_mode", choices=["teacher", "greedy", "both"], default="both")
     p.add_argument("--output", default="eval_results/stage_c_sample_predictions.jsonl")
+    p.add_argument(
+        "--enable_hand_visual",
+        action="store_true",
+        help="E2(hand visual) 스트림을 켜서 모델을 빌드한다. "
+        "E2 포함(3-스트림)으로 학습된 체크포인트를 인스펙션할 때 사용.",
+    )
     return p.parse_args()
 
 
@@ -102,6 +108,8 @@ def main():
     from src.data.keypoint_dataset import KeypointDataset
 
     cfg = load_config(args.config)
+    if args.enable_hand_visual:
+        cfg.setdefault("model", {})["enable_hand_visual"] = True
     tokenizer = load_tokenizer(cfg.get("tokenizer", {}))
     gloss_vocab = GlossVocab.load(args.gloss_vocab)
     model = build_model(cfg, tokenizer, gloss_vocab_size=len(gloss_vocab))

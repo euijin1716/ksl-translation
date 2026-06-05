@@ -485,6 +485,42 @@ class TestModel:
         assert out["boundary_logits"].shape == (B, T, 3)
         assert out["draft_logits"].shape == (B, L, 32000)
 
+    def test_hand_visual_toggle(self):
+        """E2(hand visual) on/off 게이트.
+
+        off(기본): hand_encoder 없음 + fusion 2스트림(landmark+face), crop 무시.
+        on: hand_encoder 존재 + fusion 3스트림. 둘 다 forward 정상.
+        """
+        from src.models.decoder import DecoderConfig
+        from src.models.ksl_model import KSLModel, ModelConfig
+
+        B, T, L = 2, 12, 6
+        batch = self._make_batch(B, T)
+        batch["left_hand_crop"] = torch.randn(B, T, 3, 112, 112)
+        batch["right_hand_crop"] = torch.randn(B, T, 3, 112, 112)
+        batch["tgt_tokens"] = torch.randint(1, 100, (B, L))
+
+        # 기본(off): crop은 무시되고 fusion KV는 face만 남는다.
+        m_off = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
+        assert m_off.enable_hand_visual is False
+        assert m_off.hand_encoder is None
+        assert len(m_off.fusion.config.stream_dims) == 2
+        m_off.eval()
+        with torch.no_grad():
+            out_off = m_off(**batch)
+        assert out_off["gloss_logits"].shape == (B, T, 1001)
+
+        # on: hand crop 스트림 복원 → fusion 3스트림.
+        m_on = KSLModel(
+            ModelConfig(stage="C", decoder=DecoderConfig(max_len=8), enable_hand_visual=True)
+        )
+        assert m_on.hand_encoder is not None
+        assert len(m_on.fusion.config.stream_dims) == 3
+        m_on.eval()
+        with torch.no_grad():
+            out_on = m_on(**batch)
+        assert out_on["gloss_logits"].shape == (B, T, 1001)
+
 
 # ── 8. Trainer Smoke Test ─────────────────────────────────────────────────────
 
