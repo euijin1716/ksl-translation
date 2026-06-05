@@ -111,6 +111,61 @@ def _char_ngrams(text: str, n: int) -> list[str]:
     return [text[i:i+n] for i in range(len(text) - n + 1)]
 
 
+# ── ROUGE-L ─────────────────────────────────────────────────────────────────────
+
+def compute_rouge_l(
+    hypotheses: list[str],
+    references: list[str],
+    beta: float = 1.0,
+) -> float:
+    """ROUGE-L (LCS 기반) F-score를 corpus 평균으로 계산한다.
+
+    한국어는 **어절(공백) 단위 LCS**로 측정한다 — 어순·구조 유사성을 반영하며,
+    영어용 토크나이저(sacrebleu/rouge_score)보다 한국어에 적합하다.
+
+    Args:
+        hypotheses: 예측 문장 목록
+        references: 정답 문장 목록 (1-ref)
+        beta: F-measure의 recall 가중치 (1.0=F1)
+
+    Returns:
+        ROUGE-L F-score (0~100 스케일, BLEU/chrF와 동일).
+    """
+    scores: list[float] = []
+    for hyp, ref in zip(hypotheses, references):
+        h, r = hyp.split(), ref.split()
+        if not h or not r:
+            scores.append(0.0)
+            continue
+        lcs = _lcs_len(h, r)
+        if lcs == 0:
+            scores.append(0.0)
+            continue
+        prec = lcs / len(h)
+        rec = lcs / len(r)
+        f = (1 + beta**2) * prec * rec / (rec + beta**2 * prec)
+        scores.append(f)
+    return sum(scores) / max(len(scores), 1) * 100
+
+
+def _lcs_len(a: list, b: list) -> int:
+    """최장 공통 부분수열(LCS) 길이 (rolling array)."""
+    m, n = len(a), len(b)
+    if m == 0 or n == 0:
+        return 0
+    dp = [0] * (n + 1)
+    for i in range(1, m + 1):
+        prev = 0
+        for j in range(1, n + 1):
+            tmp = dp[j]
+            if a[i - 1] == b[j - 1]:
+                dp[j] = prev + 1
+            else:
+                dp[j] = max(dp[j], dp[j - 1])
+            prev = tmp
+    return dp[n]
+
+
 # ── Classification metrics ─────────────────────────────────────────────────────
 
 def compute_f1(

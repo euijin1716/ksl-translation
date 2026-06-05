@@ -563,6 +563,48 @@ def test_sign_script_spans_sec_to_frame():
     assert _extract_sign_script_spans(raw, 0) == []
 
 
+def test_ablation_mask_non_manual():
+    """비수지(얼굴) 추론 마스킹: face 입력 + presence face채널 0, 손/pose는 유지."""
+    from src.eval.evaluator import KSLEvaluator
+    B, T = 2, 4
+    batch = {
+        "face_blendshape": torch.ones(B, T, 52),
+        "face_key_subset": torch.ones(B, T, 68, 3),
+        "presence_mask": torch.ones(B, T, 4),
+        "left_hand": torch.ones(B, T, 21, 3),
+        "pose": torch.ones(B, T, 25, 3),
+    }
+    out = KSLEvaluator._apply_ablation_mask(batch, {"non_manual"})
+    assert out["face_blendshape"].abs().sum() == 0          # 표정 0
+    assert out["face_key_subset"].abs().sum() == 0          # 얼굴 68점 0
+    assert out["presence_mask"][..., 3].sum() == 0          # face presence 채널 0
+    assert out["presence_mask"][..., 0].sum() > 0           # pose presence 유지
+    assert out["left_hand"].sum() > 0                       # 손(수지) 유지
+    assert out["pose"].sum() > 0                            # pose 유지
+
+
+def test_ttft_recorded_in_greedy():
+    """greedy 추론 시 decoder가 첫 토큰 생성 시각(TTFT 측정용)을 기록하는지."""
+    from src.models.decoder import DecoderConfig
+    from src.models.ksl_model import KSLModel, ModelConfig
+
+    model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=6)))
+    model.eval()
+    B, T = 1, 8
+    with torch.no_grad():
+        out = model(
+            pose=torch.randn(B, T, 25, 3),
+            left_hand=torch.randn(B, T, 21, 3),
+            right_hand=torch.randn(B, T, 21, 3),
+            face_blendshape=torch.randn(B, T, 52),
+            face_key_subset=torch.randn(B, T, 68, 3),
+            presence_mask=torch.ones(B, T, 4),
+            src_key_padding_mask=torch.zeros(B, T, dtype=torch.bool),
+        )
+    assert "draft_tokens" in out                              # greedy 경로
+    assert isinstance(model.decoder.last_first_token_time, float)  # 첫 토큰 시각 기록됨
+
+
 # ── 8. Trainer Smoke Test ─────────────────────────────────────────────────────
 
 class TestTrainer:
@@ -995,6 +1037,14 @@ class TestMetrics:
     def test_wer_all_wrong(self):
         from src.eval.metrics import compute_wer
         assert compute_wer([["x"]], [["a", "b"]]) > 0.0
+
+    def test_rouge_l(self):
+        from src.eval.metrics import compute_rouge_l
+        assert compute_rouge_l(["a b c"], ["a b c"]) == 100.0        # 완전 일치
+        assert compute_rouge_l(["a b c d"], ["a b x d"]) == 75.0     # LCS=3/4
+        assert compute_rouge_l([""], ["a b"]) == 0.0                 # 빈 예측
+        # 어순이 깨지면 LCS가 줄어 점수 하락
+        assert compute_rouge_l(["a b c"], ["c b a"]) < 100.0
 
     def test_accuracy(self):
         from src.eval.metrics import compute_accuracy

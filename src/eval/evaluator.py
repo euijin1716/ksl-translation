@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from ..data.signals import NMS_DETAIL_GROUPS
-from .metrics import compute_accuracy, compute_bleu, compute_chrf, compute_f1, compute_wer
+from .metrics import (
+    compute_accuracy,
+    compute_bleu,
+    compute_chrf,
+    compute_f1,
+    compute_rouge_l,
+    compute_wer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +62,11 @@ class EvalResult:
     # 번역
     bleu: float = 0.0
     chrf: float = 0.0
+    rouge_l: float = 0.0
+
+    # 시스템 지연 (greedy 추론 시): 마지막 프레임 입력 ~ draft 첫 토큰
+    ttft_ms: float = 0.0
+    ttft_p95_ms: float = 0.0
 
     # 도메인별 BLEU
     domain_bleu: dict[str, float] = field(default_factory=dict)
@@ -76,7 +89,8 @@ class EvalResult:
             f"gloss_wer={self.gloss_wer:.3f} | "
             f"nms_f1={self.nms_f1:.3f} | "
             f"nms_detail={self.nms_detail_accuracy} | "
-            f"BLEU={self.bleu:.2f} | chrF={self.chrf:.2f}"
+            f"BLEU={self.bleu:.2f} | chrF={self.chrf:.2f} | ROUGE-L={self.rouge_l:.2f} | "
+            f"TTFT={self.ttft_ms:.0f}ms"
         )
 
 
@@ -94,6 +108,26 @@ class KSLEvaluator:
         self.device = torch.device(device)
         self.model.to(self.device)
 
+    @staticmethod
+    def _apply_ablation_mask(batch: dict, groups: set[str]) -> dict:
+        """추론 ablation: 지정 신호 그룹의 입력을 0으로 가린다(학습/데이터는 불변).
+
+        non_manual(=비수지=얼굴): face_blendshape·face_key_subset를 0으로,
+        presence_mask의 face 채널(index 3)도 0으로 → 일관된 '얼굴 없음' 신호.
+        손(left/right_hand)·pose는 그대로 둔다.
+        """
+        if groups & {"non_manual", "face"}:
+            for key in ("face_blendshape", "face_key_subset"):
+                t = batch.get(key)
+                if isinstance(t, torch.Tensor):
+                    batch[key] = torch.zeros_like(t)
+            pm = batch.get("presence_mask")
+            if isinstance(pm, torch.Tensor) and pm.dim() >= 2 and pm.shape[-1] >= 4:
+                pm = pm.clone()
+                pm[..., 3] = 0
+                batch["presence_mask"] = pm
+        return batch
+
     @torch.no_grad()
     def evaluate(
         self,
@@ -102,6 +136,7 @@ class KSLEvaluator:
         tokenizer: Any = None,
         gloss_vocab: Any = None,
         draft_mode: str = "teacher",
+        ablation_mask: set[str] | None = None,
     ) -> EvalResult:
         """DataLoader 전체에 대해 평가를 수행한다."""
         all_intent_preds, all_intent_labels = [], []
@@ -113,9 +148,12 @@ class KSLEvaluator:
         all_gloss_hyp, all_gloss_ref = [], []
         domain_results: dict[str, list] = {}
         all_domains: list[str] = []
+        ttfts: list[float] = []
 
         for batch in loader:
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            if ablation_mask:
+                batch = self._apply_ablation_mask(batch, ablation_mask)
             all_domains.extend([str(d) for d in batch.get("domain", [])])
 
             seq_len = batch["seq_len"]
@@ -123,6 +161,9 @@ class KSLEvaluator:
             mask = torch.arange(T, device=self.device).unsqueeze(0) >= seq_len.unsqueeze(1)
 
             use_teacher = draft_mode == "teacher"
+            if not use_teacher and self.device.type == "cuda":
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
             outputs = self.model(
                 pose=batch["pose"],
                 left_hand=batch["left_hand"],
@@ -134,6 +175,12 @@ class KSLEvaluator:
                 tgt_padding=batch.get("tgt_padding") if use_teacher else None,
                 src_key_padding_mask=mask,
             )
+            # TTFT: greedy일 때만(=실제 추론) 마지막 프레임 입력~첫 토큰 시각
+            if not use_teacher:
+                _dec = getattr(self.model, "decoder", None)
+                _ft = getattr(_dec, "last_first_token_time", None)
+                if _ft is not None:
+                    ttfts.append((_ft - t0) * 1000.0)
 
             # Intent accuracy
             if "intent_logits" in outputs:
@@ -255,11 +302,17 @@ class KSLEvaluator:
             bleu = compute_bleu(all_hyp_texts, all_ref_texts)
             result.bleu = bleu["bleu"]
             result.chrf = compute_chrf(all_hyp_texts, all_ref_texts)
+            result.rouge_l = compute_rouge_l(all_hyp_texts, all_ref_texts)
             result.domain_bleu = {
                 domain: compute_bleu([h for h, _ in pairs], [r for _, r in pairs])["bleu"]
                 for domain, pairs in domain_results.items()
                 if pairs
             }
+
+        if ttfts:
+            ttfts.sort()
+            result.ttft_ms = sum(ttfts) / len(ttfts)
+            result.ttft_p95_ms = ttfts[min(len(ttfts) - 1, int(len(ttfts) * 0.95))]
 
         return result
 

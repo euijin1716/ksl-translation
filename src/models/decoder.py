@@ -6,6 +6,7 @@ Stage C에서 사용한다.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -144,11 +145,16 @@ class KoreanDraftDecoder(nn.Module):
 
         tokens = torch.full((B, 1), c.bos_token_id, dtype=torch.long, device=device)
         done = torch.zeros(B, dtype=torch.bool, device=device)
+        self.last_first_token_time = None   # TTFT 측정: 첫 토큰 생성 시각(perf_counter)
 
         for _ in range(max_len - 1):
             logits = self.forward(encoder_out, tokens, memory_padding=memory_padding)
             next_tok = logits[:, -1, :].argmax(dim=-1)   # [B]
             tokens = torch.cat([tokens, next_tok.unsqueeze(-1)], dim=1)
+            if self.last_first_token_time is None:
+                if tokens.is_cuda:
+                    torch.cuda.synchronize()   # GPU 비동기 보정(정확한 첫 토큰 시각)
+                self.last_first_token_time = time.perf_counter()
             done = done | (next_tok == c.eos_token_id)
             if done.all():
                 break

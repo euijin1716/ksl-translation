@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from dataclasses import fields
@@ -28,7 +29,7 @@ def parse_args():
     p.add_argument("--manifest", default="data/manifests/test.jsonl")
     p.add_argument("--split", default="test", choices=["train", "valid", "test"])
     p.add_argument("--stage", default=None, help="Stage override; only C is supported")
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--gloss_vocab", default="data/manifests/gloss_vocab.json")
@@ -38,6 +39,11 @@ def parse_args():
         default=None,
         choices=["teacher", "greedy"],
         help="teacher is faster; greedy is closer to real inference but slower. Defaults to config eval.draft_mode or greedy.",
+    )
+    p.add_argument(
+        "--ablation_non_manual",
+        action="store_true",
+        help="비수지(얼굴) 입력을 추론 시 0으로 가린 변형을 추가 평가해 기여도(WER 차이)를 측정한다.",
     )
     return p.parse_args()
 
@@ -187,6 +193,34 @@ def main():
     )
     logger.info(result.summary())
     evaluator.save_result(result, args.output)
+
+    if args.ablation_non_manual:
+        masked = evaluator.evaluate(
+            loader,
+            split=args.split,
+            tokenizer=tokenizer,
+            gloss_vocab=gloss_vocab,
+            draft_mode=draft_mode,
+            ablation_mask={"non_manual"},
+        )
+        logger.info("[ablation:non_manual] %s", masked.summary())
+        contribution = masked.gloss_wer - result.gloss_wer
+        abl = {
+            "metric": "non_manual_contribution",
+            "wer_full": result.gloss_wer,
+            "wer_masked_non_manual": masked.gloss_wer,
+            "contribution_wer": contribution,        # >0 이면 비수지가 gloss에 도움(제거 시 WER↑)
+            "bleu_full": result.bleu,
+            "bleu_masked_non_manual": masked.bleu,
+            "num_samples": result.num_samples,
+        }
+        abl_path = Path(args.output).with_name(Path(args.output).stem + "_ablation_non_manual.json")
+        with open(abl_path, "w", encoding="utf-8") as f:
+            json.dump(abl, f, ensure_ascii=False, indent=2)
+        logger.info(
+            "비수지 기여도(WER): full=%.3f masked=%.3f 기여도=%+.3f (>0=도움) → %s",
+            result.gloss_wer, masked.gloss_wer, contribution, abl_path,
+        )
 
 
 if __name__ == "__main__":
