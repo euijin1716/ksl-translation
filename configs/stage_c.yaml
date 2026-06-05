@@ -11,12 +11,12 @@ model:
 train:
   stage: C
   max_epochs: 50
-  batch_size: 1
-  num_workers: 4
+  batch_size: 16
+  num_workers: 8
   pin_memory: true
   persistent_workers: true
-  prefetch_factor: 2
-  use_amp: false
+  prefetch_factor: 4
+  use_amp: true
   device: cuda
   loss_weight_gloss: 1.0
   loss_weight_nms: 0.5

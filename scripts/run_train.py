@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import torch
 import yaml
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,7 +27,7 @@ def parse_args():
     p.add_argument("--stage", default=None, help="Stage override; only C is supported")
     p.add_argument("--device", default=None, help="Override device (cpu/cuda)")
     p.add_argument("--batch_size", type=int, default=None, help="Override train batch size")
-    p.add_argument("--num_workers", type=int, default=None, help="Override DataLoader worker count")
+    p.add_argument("--num_workers", type=int, default=16, help="Override DataLoader worker count")
     p.add_argument("--max_epochs", type=int, default=None, help="Override max epochs")
     p.add_argument("--amp", dest="use_amp", action="store_true", help="Enable CUDA mixed precision")
     p.add_argument("--no_amp", dest="use_amp", action="store_false", help="Disable CUDA mixed precision")
@@ -116,6 +117,14 @@ def build_decoder_config(decoder_cfg: dict, tokenizer):
 
 def main():
     args = parse_args()
+
+    # Ada Lovelace(RTX 40xx)+ 에서 TF32 matmul과 cuDNN benchmark를 활성화한다.
+    # TF32는 FP32 범위를 유지하면서 텐서코어를 사용해 matmul 속도를 높인다.
+    # benchmark=True는 입력 크기가 일정할 때 최적 cuDNN 알고리즘을 자동 선택한다.
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
 
     # ── Config 로드 ────────────────────────────────────────────────────────
     base_cfg: dict = {}
