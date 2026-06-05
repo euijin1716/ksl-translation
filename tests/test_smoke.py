@@ -80,7 +80,8 @@ class TestSchema:
         assert mask.sum().item() == 5
         assert labels[0].item() == NMS_DETAIL_CLASSES["eyebrow"].index("raise")
         assert labels[1].item() == NMS_DETAIL_CLASSES["eye"].index("squint")
-        assert labels[2].item() == NMS_DETAIL_CLASSES["mouth_shape"].index("a")
+        # mouth_shape는 present/absent 2분류 — "a"(truthy)는 present로 매핑
+        assert labels[2].item() == NMS_DETAIL_CLASSES["mouth_shape"].index("present")
         assert labels[3].item() == NMS_DETAIL_CLASSES["head_movement"].index("shake")
         assert labels[4].item() == NMS_DETAIL_CLASSES["gaze_direction"].index("left")
 
@@ -478,7 +479,7 @@ class TestModel:
         assert out["nms_logits"].shape == (B, T, 12)
         assert out["nms_eyebrow_logits"].shape == (B, T, 4)
         assert out["nms_eye_logits"].shape == (B, T, 4)
-        assert out["nms_mouth_shape_logits"].shape == (B, T, 11)
+        assert out["nms_mouth_shape_logits"].shape == (B, T, 2)
         assert out["nms_head_movement_logits"].shape == (B, T, 5)
         assert out["nms_gaze_direction_logits"].shape == (B, T, 7)
         assert out["intent_logits"].shape == (B, 7)
@@ -520,6 +521,46 @@ class TestModel:
         with torch.no_grad():
             out_on = m_on(**batch)
         assert out_on["gloss_logits"].shape == (B, T, 1001)
+
+
+# ── 7b. Label quality (mouth_shape / boundary spans) ─────────────────────────
+
+def test_mouth_shape_present_absent():
+    """mouth_shape detail이 present/absent 2분류로 인코딩되는지."""
+    from src.data.signals import (
+        NMS_DETAIL_CLASSES, NMS_DETAIL_GROUPS, encode_nms_detail_labels,
+    )
+    assert NMS_DETAIL_CLASSES["mouth_shape"] == ["absent", "present"]
+    gi = NMS_DETAIL_GROUPS.index("mouth_shape")
+    # 더미문자열/입말단어/open → present(1)
+    for v in ("mouth_shape", "오늘", "open"):
+        labels, mask = encode_nms_detail_labels({"mouth_shape": v})
+        assert labels[gi].item() == 1, v
+        assert mask[gi].item() == 1.0
+    # 빈값 → absent(0)
+    labels, _ = encode_nms_detail_labels({"mouth_shape": ""})
+    assert labels[gi].item() == 0
+    # mouth_open만 True → present
+    labels, mask = encode_nms_detail_labels({"mouth_open": True})
+    assert labels[gi].item() == 1
+    assert mask[gi].item() == 1.0
+
+
+def test_sign_script_spans_sec_to_frame():
+    """sign_script 초 단위 이벤트가 원본 프레임 구간으로 환산되는지."""
+    from src.data.adapters.aihub_sign_adapter import _extract_sign_script_spans
+    raw = {"sign_script": {"sign_gestures_both": [
+        {"gloss_id": "어림잡다1", "start": 0.832, "end": 1.344},
+        {"gloss_id": "정도1", "start": 7.762, "end": 8.274},
+    ]}}
+    spans = _extract_sign_script_spans(raw, fps=30.0)
+    assert len(spans) == 2
+    # 0.832*30≈25, 1.344*30≈40
+    assert spans[0]["start_frame"] == 25 and spans[0]["end_frame"] == 40
+    assert spans[0]["gloss"] == "어림잡다1"
+    # sign_script 없거나 fps≤0이면 빈 리스트
+    assert _extract_sign_script_spans({}, 30.0) == []
+    assert _extract_sign_script_spans(raw, 0) == []
 
 
 # ── 8. Trainer Smoke Test ─────────────────────────────────────────────────────

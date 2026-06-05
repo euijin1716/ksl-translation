@@ -73,7 +73,7 @@ model:
     nms_num_classes: 12
     nms_eyebrow_classes: 4
     nms_eye_classes: 4
-    nms_mouth_shape_classes: 11
+    nms_mouth_shape_classes: 2   # present/absent 2분류 (입모양 라벨 오염으로 11→2 단순화)
     nms_head_movement_classes: 5
     nms_gaze_direction_classes: 7
     intent_num_classes: 7

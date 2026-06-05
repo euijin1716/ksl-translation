@@ -17,7 +17,7 @@ class HeadsConfig:
     boundary_num_classes: int = 3
     nms_eyebrow_classes: int = 4
     nms_eye_classes: int = 4
-    nms_mouth_shape_classes: int = 11
+    nms_mouth_shape_classes: int = 2
     nms_head_movement_classes: int = 5
     nms_gaze_direction_classes: int = 7
     dropout: float = 0.1

@@ -212,6 +212,45 @@ def _extract_annotation_spans(annots: list[dict[str, Any]]) -> list[dict[str, An
     return spans
 
 
+def _extract_sign_script_spans(raw: dict[str, Any], fps: float) -> list[dict[str, Any]]:
+    """sign_script의 초 단위 gloss 이벤트를 원본 프레임 구간으로 환산한다.
+
+    AI Hub sign_script은 start/end가 '초'다(예: 0.832~1.344). keypoint_dataset가
+    annotation_spans를 원본 프레임 기준으로 해석하므로 start*fps(원본 fps)로 환산한다.
+    (이전엔 start_frame 키만 찾아 전부 드롭 → boundary 라벨이 100% 비어 있었다.)
+    """
+    sign_script = raw.get("sign_script")
+    if not isinstance(sign_script, dict) or not fps or fps <= 0:
+        return []
+    spans: list[dict[str, Any]] = []
+    for key in (
+        "sign_gestures_both", "sign_gestures_strong", "sign_gestures_weak",
+        "sign_gestures_right", "sign_gestures_left",
+    ):
+        events = sign_script.get(key) or []
+        if not isinstance(events, list):
+            continue
+        for item in events:
+            if not isinstance(item, dict):
+                continue
+            start, end = item.get("start"), item.get("end")
+            if start is None or end is None:
+                continue
+            try:
+                sf, ef = int(round(float(start) * fps)), int(round(float(end) * fps))
+            except (TypeError, ValueError):
+                continue
+            if ef < sf:
+                sf, ef = ef, sf
+            spans.append({
+                "gloss": str(item.get("gloss_id") or item.get("gloss") or "").strip(),
+                "start_frame": sf,
+                "end_frame": ef,
+            })
+    spans.sort(key=lambda s: (s["start_frame"], s["end_frame"]))
+    return spans
+
+
 class AIHubSignAdapter(BaseAdapter):
     """AI Hub 한국수어 영상 데이터셋 adapter.
 
@@ -369,7 +408,7 @@ class AIHubSignAdapter(BaseAdapter):
                 "gender": info.get("gender"),
                 "label_file": str(label_path.name),
                 "annotation_count": len(annots),
-                "annotation_spans": _extract_annotation_spans(annots),
+                "annotation_spans": _extract_sign_script_spans(raw, fps),
                 "has_nms": nms_labels is not None,
             },
             source_annotation_path=relative_path(label_path, self.root),

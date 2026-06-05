@@ -40,19 +40,8 @@ NMS_DETAIL_GROUPS: list[str] = [
 NMS_DETAIL_CLASSES: dict[str, list[str]] = {
     "eyebrow": ["neutral", "raise", "furrow", "both"],
     "eye": ["neutral", "wide", "squint", "both"],
-    "mouth_shape": [
-        "neutral",
-        "open",
-        "a",
-        "i",
-        "u",
-        "e",
-        "o",
-        "round",
-        "spread",
-        "closed",
-        "other",
-    ],
+    # 입모양은 present/absent 2분류로 단순화 (원본 descriptor가 더미/빈값/입말로 오염).
+    "mouth_shape": ["absent", "present"],
     "head_movement": ["neutral", "nod", "shake", "tilt", "complex"],
     "gaze_direction": ["forward", "left", "right", "up", "down", "away", "other"],
 }
@@ -172,32 +161,15 @@ def _eye_class(data: dict[str, Any]) -> str:
 
 
 def _mouth_shape_class(data: dict[str, Any]) -> str:
-    raw = data.get("mouth_shape")
-    if raw is None and _truthy(data.get("mouth_open")):
-        return "open"
+    """\uc785\ubaa8\uc591\uc744 present/absent 2\ubd84\ub958\ub85c \ub2e8\uc21c\ud654\ud55c\ub2e4.
 
-    value = _norm(raw)
-    if value in {"", "none", "neutral"}:
-        return "neutral"
-    if value in {"closed", "close", "shut", "\ub2e4\ubb38", "\ub2e4\ubb3c\uae30"}:
-        return "closed"
-    if value in {"open", "mouth_open", "mo1", "\uc785\ubc8c\ub9bc", "\ubc8c\ub9bc"}:
-        return "open"
-    if value in {"a", "ah", "\uc544"}:
-        return "a"
-    if value in {"i", "ee", "smile", "\uc774"}:
-        return "i"
-    if value in {"u", "oo", "\uc6b0"}:
-        return "u"
-    if value in {"e", "eh", "\uc5d0", "\uc560"}:
-        return "e"
-    if value in {"o", "oh", "\uc624"}:
-        return "o"
-    if value in {"round", "rounded", "pucker", "lip_round", "\uc624\ubbc0\ub9bc", "\ub465\uae00\uac8c"}:
-        return "round"
-    if value in {"spread", "wide", "stretch", "lip_spread", "\uc606\uc73c\ub85c"}:
-        return "spread"
-    return "other"
+    \uc6d0\ubcf8 mouth_shape descriptor\uac00 \ub354\ubbf8("mouth_shape")/\ube48\uac12/\uc785\ub9d0\ub2e8\uc5b4\ub85c \uc624\uc5fc\ub3fc \uc138\ubd80 \ubd84\ub958\uac00
+    \ubd88\uac00\ub2a5\ud588\ub2e4(11\ud074\ub798\uc2a4\uac00 'other'\ub85c \ubd95\uad34). \uadf8\ub798\uc11c '\uc785\ub9d0/\uc785\ubaa8\uc591\uc774 \uc788\uc5c8\ub294\uc9c0'\ub9cc \ubcf8\ub2e4.
+    mouth_shape(\ub610\ub294 mouth_open)\uac00 truthy\uba74 present, \uc544\ub2c8\uba74 absent.
+    """
+    if _truthy(data.get("mouth_shape")) or _truthy(data.get("mouth_open")):
+        return "present"
+    return "absent"
 
 
 def _head_movement_class(data: dict[str, Any]) -> str:
