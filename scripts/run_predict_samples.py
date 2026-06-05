@@ -73,6 +73,39 @@ def _decode_draft_tokens(tokens: torch.Tensor, tokenizer) -> str:
     return tokenizer.decode(ids, skip_special_tokens=True).strip()
 
 
+def _greedy_token_confidence(model, fused, mask, gtok, tokenizer):
+    """greedy 토큰을 디코더에 teacher-forced로 재통과시켜 토큰별 확률/엔트로피를 계산한다.
+
+    greedy 단계의 argmax 확률과 동일(prefix가 같으므로). p가 낮거나 ent가 높은 토큰 =
+    모델이 불확실한 구간. 고유명사 환각이 저확률인지(=confidence로 걸러낼 수 있는지) 확인용.
+    재인코딩 없이 이미 계산된 fused를 디코더에만 다시 통과시킨다.
+    """
+    eos = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else tokenizer.sep_token_id
+    pad = tokenizer.pad_token_id
+    with torch.no_grad():
+        logits = model.decoder(fused, gtok, None, mask)      # [B, L, vocab]
+        probs = torch.softmax(logits[0].float(), dim=-1)     # [L, vocab]
+    ids = gtok[0].detach().cpu().tolist()
+    toks, ps = [], []
+    for i in range(len(ids) - 1):
+        nxt = ids[i + 1]                                     # logits[i]가 예측하는 다음 토큰
+        if nxt in (eos, pad):
+            break
+        p = float(probs[i, nxt])
+        ent = float(-(probs[i] * probs[i].clamp_min(1e-9).log()).sum())
+        toks.append({
+            "tok": tokenizer.convert_ids_to_tokens([nxt])[0],
+            "p": round(p, 3),
+            "ent": round(ent, 2),
+        })
+        ps.append(p)
+    agg = {
+        "min_p": round(min(ps), 3) if ps else None,
+        "mean_p": round(sum(ps) / len(ps), 3) if ps else None,
+    }
+    return toks, agg
+
+
 def _decode_nms(outputs: dict[str, torch.Tensor], seq_len: int) -> dict[str, Any]:
     from src.data.signals import NMS_DETAIL_CLASSES, NMS_KEYS
 
@@ -193,6 +226,14 @@ def main():
                 record["draft_greedy"] = _decode_draft_tokens(
                     greedy_outputs["draft_tokens"], tokenizer
                 )
+                # draft 토큰별 confidence(확률/엔트로피) — 환각 구간이 저확률인지 확인용
+                if "fused" in greedy_outputs:
+                    tok_probs, conf_agg = _greedy_token_confidence(
+                        model, greedy_outputs["fused"], mask,
+                        greedy_outputs["draft_tokens"], tokenizer,
+                    )
+                    record["draft_greedy_token_probs"] = tok_probs
+                    record["draft_greedy_conf"] = conf_agg
 
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
