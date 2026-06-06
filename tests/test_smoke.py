@@ -999,9 +999,11 @@ class TestStreamingInferencePipeline:
         from src.infer.pipeline import InferencePipeline
         from src.models.ksl_model import KSLModel, ModelConfig
         from src.models.decoder import DecoderConfig
+        from src.data.gloss_vocab import GlossVocab
 
         model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
-        pipeline = InferencePipeline(model, device="cpu")
+        gloss_vocab = GlossVocab.build_from_samples([])
+        pipeline = InferencePipeline(model, gloss_vocab=gloss_vocab, device="cpu")
         config = StreamingConfig(
             onset_threshold=0.6,
             offset_threshold=0.4,
@@ -1030,9 +1032,11 @@ class TestStreamingInferencePipeline:
         from src.infer.pipeline import InferencePipeline
         from src.models.ksl_model import KSLModel, ModelConfig
         from src.models.decoder import DecoderConfig
+        from src.data.gloss_vocab import GlossVocab
 
         model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
-        pipeline = InferencePipeline(model, device="cpu")
+        gloss_vocab = GlossVocab.build_from_samples([])
+        pipeline = InferencePipeline(model, gloss_vocab=gloss_vocab, device="cpu")
         sp = StreamingInferencePipeline(pipeline, domain="directions")
 
         # 히스토리를 인위적으로 채운다
@@ -1087,9 +1091,11 @@ class TestInferencePipeline:
         from src.infer.pipeline import InferencePipeline
         from src.models.decoder import DecoderConfig
         from src.models.ksl_model import KSLModel, ModelConfig
+        from src.data.gloss_vocab import GlossVocab
 
         model = KSLModel(ModelConfig(stage="C", decoder=DecoderConfig(max_len=8)))
-        pipeline = InferencePipeline(model, device="cpu")
+        gloss_vocab = GlossVocab.build_from_samples([])
+        pipeline = InferencePipeline(model, gloss_vocab=gloss_vocab, device="cpu")
         batch = make_dummy_batch(batch_size=1, max_len=16)
         # list of tensors → stack for inference
         batch["gloss_ids"] = batch["gloss_ids"][0]
@@ -1098,6 +1104,9 @@ class TestInferencePipeline:
         assert isinstance(result.final_text, str)
         assert 0.0 <= result.confidence <= 1.0
         assert result.activity_state in ("idle", "ongoing", "ended")
+        # gloss_hypotheses는 숫자 ID("gloss_5")가 아닌 vocab 토큰이어야 한다
+        for g in result.gloss_hypotheses:
+            assert not g.startswith("gloss_"), f"숫자 ID 그대로 노출: {g}"
 
 
 # ── 12. Streaming State Machine ───────────────────────────────────────────────
@@ -1161,7 +1170,9 @@ class TestEndToEnd:
         assert eval_result.num_samples >= 0
 
         # 6. Inference
-        pipeline = InferencePipeline(model, device="cpu")
+        from src.data.gloss_vocab import GlossVocab
+        gloss_vocab = GlossVocab.build_from_samples([])
+        pipeline = InferencePipeline(model, gloss_vocab=gloss_vocab, device="cpu")
         batch = make_dummy_batch(batch_size=1, max_len=16)
         infer_result = pipeline.infer(batch, domain="hospital")
         assert isinstance(infer_result.final_text, str)
