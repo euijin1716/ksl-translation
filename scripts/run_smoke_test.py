@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.dummy import DummyDataset, collate_fn, make_dummy_batch
+from src.data.gloss_vocab import GlossVocab
 from src.eval.evaluator import KSLEvaluator
 from src.infer.pipeline import InferencePipeline
 from src.llm.corrector import ContextCorrector
@@ -56,11 +57,13 @@ def run():
         val_loss = trainer.val_epoch()
         print(f"  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
 
-        # Inference
-        pipeline = InferencePipeline(model, device="cpu")
+        # Inference (더미 vocab으로 gloss 실제 decode 경로 검증)
+        dummy_vocab = GlossVocab({"<blank>": 0, "<unk>": 1, "테스트": 2, "수어": 3})
+        pipeline = InferencePipeline(model, dummy_vocab, device="cpu")
         batch = make_dummy_batch(batch_size=1, max_len=16)
         result = pipeline.infer(batch, domain="hospital")
         print(f"  infer confidence={result.confidence:.3f}  final_text='{result.final_text}'")
+        print(f"  gloss_hypotheses={result.gloss_hypotheses}")
 
         # Eval
         evaluator = KSLEvaluator(model, device="cpu")

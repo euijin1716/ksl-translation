@@ -12,6 +12,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from ..data.gloss_vocab import GlossVocab
 from ..data.signals import NMS_DETAIL_CLASSES, NMS_KEYS
 from ..llm.corrector import ContextCorrector
 
@@ -47,6 +48,7 @@ class InferencePipeline:
     def __init__(
         self,
         model: nn.Module,
+        gloss_vocab: GlossVocab,
         corrector: ContextCorrector | None = None,
         device: str = "cpu",
         confidence_threshold: float = 0.4,
@@ -59,6 +61,7 @@ class InferencePipeline:
         self.model.to(self.device)
         self.confidence_threshold = confidence_threshold
         self.tokenizer = tokenizer
+        self.gloss_vocab = gloss_vocab
 
     @torch.no_grad()
     def infer(
@@ -117,15 +120,14 @@ class InferencePipeline:
     def _decode_gloss(self, gloss_logits: torch.Tensor | None) -> list[str]:
         if gloss_logits is None:
             return []
-        # CTC argmax decode (더미: top token per frame → unique)
         ids = gloss_logits.argmax(dim=-1)[0].tolist()    # [T]
-        # 연속 중복 제거, blank(0) 제거
-        prev, result = -1, []
+        # CTC: 연속 중복 제거, blank(0) 제거
+        prev, collapsed = -1, []
         for t in ids:
             if t != prev and t != 0:
-                result.append(f"gloss_{t}")
+                collapsed.append(t)
             prev = t
-        return result[:5]
+        return self.gloss_vocab.decode(collapsed[:5])
 
     def _decode_nms(self, outputs: dict[str, Any]) -> dict[str, Any]:
         nms_logits = outputs.get("nms_logits")
