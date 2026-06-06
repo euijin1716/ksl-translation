@@ -641,6 +641,27 @@ class TestLLMCorrector:
         assert result.final_text == "두통이 있습니다."
         assert not result.retry_or_clarify
 
+    def test_high_risk_guard_uses_canonical_domains(self):
+        """고위험 보수 가드가 실제 도메인(hospital·public)에 적용되는지 — 도메인 오타 회귀 방지."""
+        from src.data.schema import DOMAINS
+        from src.llm.output_validator import HIGH_RISK_DOMAINS, validate_output
+        from src.llm.provider import LLMInput, LLMOutput
+
+        # 고위험 도메인 키가 실제 DOMAINS에 존재해야 함 (매직스트링/오타 방지)
+        assert HIGH_RISK_DOMAINS <= DOMAINS, f"존재하지 않는 도메인: {HIGH_RISK_DOMAINS - DOMAINS}"
+
+        draft = "접수 어디서 하는지 알려 주세요"
+        modified = "접수처 위치 안내해 드릴게요"   # 저신뢰인데 LLM이 내용 변경
+        # 병원·민원 둘 다 보수적으로 draft 유지 + 재질문이어야 함
+        for dom in ("hospital", "public"):
+            inp = LLMInput(
+                korean_draft=draft, top_k_gloss=[], nms_summary={},
+                confidence=0.3, previous_turns=[], domain=dom,
+            )
+            out = validate_output(LLMOutput(final_text=modified), inp)
+            assert out.final_text == draft, f"{dom}: 고위험 가드 미작동"
+            assert out.retry_or_clarify is True, f"{dom}: retry 미설정"
+
     def test_response_parser_valid_json(self):
         from src.llm.response_parser import parse_response
         raw = '{"final_text": "테스트", "retry_or_clarify": false, "uncertain_spans": []}'

@@ -13,15 +13,15 @@ from .provider import LLMInput, LLMOutput
 
 logger = logging.getLogger(__name__)
 
-# 오역 시 실제 피해가 큰 도메인
-HIGH_RISK_DOMAINS = {"hospital", "public_service"}
+# 오역 시 실제 피해가 큰 도메인 (schema.DOMAINS 기준: 병원·민원)
+HIGH_RISK_DOMAINS = {"hospital", "public"}
 
 # 도메인별 최대 허용 길이 비율 (draft 대비)
 _DOMAIN_MAX_EXPANSION: dict[str, float] = {
     "hospital": 1.5,
-    "public_service": 1.5,
+    "public": 1.5,
     "directions": 2.0,
-    "order_payment": 2.0,
+    "order": 2.0,
     "reservation": 2.0,
     "help": 1.8,
     "unknown": 2.0,

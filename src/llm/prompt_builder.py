@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from .provider import LLMInput
 
-# 병원/민원처럼 오역 시 실제 피해가 큰 도메인
-HIGH_RISK_DOMAINS = {"hospital", "public_service"}
+# 병원/민원처럼 오역 시 실제 피해가 큰 도메인 (schema.DOMAINS 기준)
+HIGH_RISK_DOMAINS = {"hospital", "public"}
 
 SYSTEM_PROMPT = """당신은 한국수어(KSL) 통역 시스템의 문맥 보정기입니다.
 
@@ -41,7 +41,7 @@ _DOMAIN_GUIDELINES: dict[str, str] = {
         "인식기 출력에 없는 의료 용어를 절대 추가하지 마세요. "
         "불확실한 부분은 uncertain_spans에 반드시 표시하고, 필요 시 retry_or_clarify를 true로 설정하세요."
     ),
-    "public_service": (
+    "public": (
         "【공공 민원 도메인 주의】 행정 절차·법적 용어는 정확하게 유지하세요. "
         "원문에 없는 조건이나 기한을 추가하지 마세요."
     ),
@@ -49,7 +49,7 @@ _DOMAIN_GUIDELINES: dict[str, str] = {
         "【길 안내 도메인】 방향·장소명은 인식기 출력 그대로 유지하세요. "
         "추론으로 목적지를 바꾸지 마세요."
     ),
-    "order_payment": (
+    "order": (
         "【주문/결제 도메인】 수량·금액·메뉴명은 인식기 출력 그대로 유지하세요."
     ),
     "reservation": (

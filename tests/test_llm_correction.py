@@ -65,7 +65,7 @@ CASES = [
         gloss=["아메리카노", "두-개", "카드-결제"],
         nms={"mouth": "open", "eyebrow": "raised"},
         confidence=0.78,
-        domain="order_payment",
+        domain="order",
     ),
     dict(
         draft="영수증 필요 없어요",
@@ -73,7 +73,7 @@ CASES = [
         gloss=["영수증", "필요-없다"],
         nms={"head": "shake", "eyebrow": "neutral"},
         confidence=0.95,
-        domain="order_payment",
+        domain="order",
     ),
     dict(
         draft="내일 오후 세시 두 명 예약 되나요",
@@ -97,7 +97,7 @@ CASES = [
         gloss=["주민등록등본", "발급-방법"],
         nms={"eyebrow": "raised", "head": "tilt"},
         confidence=0.75,
-        domain="public_service",
+        domain="public",
     ),
     dict(
         draft="도움 필요해 빨리",
