@@ -662,6 +662,21 @@ class TestLLMCorrector:
             assert out.final_text == draft, f"{dom}: 고위험 가드 미작동"
             assert out.retry_or_clarify is True, f"{dom}: retry 미설정"
 
+    def test_gloss_confidence_in_prompt(self):
+        """gloss 신뢰도가 프롬프트에 '단어(0.92)'로 들어가고, 없으면 단어만(폴백)."""
+        from src.llm.prompt_builder import _format_gloss, build_prompt
+        from src.llm.provider import LLMInput
+
+        assert _format_gloss(["오늘", "강풍"], [0.92, 0.41]) == "오늘(0.92), 강풍(0.41)"
+        assert _format_gloss(["오늘"], []) == "오늘"            # 신뢰도 없으면 폴백
+        assert _format_gloss([], [0.5]) == "(없음)"
+        inp = LLMInput(
+            korean_draft="초안", top_k_gloss=["오늘", "강풍"],
+            gloss_confidences=[0.92, 0.41], nms_summary={}, confidence=0.7,
+            previous_turns=[], domain="help",
+        )
+        assert "오늘(0.92)" in build_prompt(inp)
+
     def test_response_parser_valid_json(self):
         from src.llm.response_parser import parse_response
         raw = '{"final_text": "테스트", "retry_or_clarify": false, "uncertain_spans": []}'

@@ -21,6 +21,7 @@ class LLMInput:
     previous_turns: list[str]            # 이전 발화 한국어 (최대 5개)
     domain: str                          # 발화 도메인
     retry_or_clarify: bool = False       # 재질문 상태
+    gloss_confidences: list[float] = field(default_factory=list)  # 각 gloss의 신뢰도(0~1), top_k_gloss와 동일 순서
 
 
 @dataclass

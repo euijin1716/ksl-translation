@@ -37,6 +37,7 @@ class ContextCorrector:
         confidence: float,
         domain: str,
         retry_or_clarify: bool = False,
+        gloss_confidences: list[float] | None = None,
     ) -> LLMOutput:
         """한국어 초안을 문맥 보정해 최종 문장을 반환한다.
 
@@ -51,6 +52,7 @@ class ContextCorrector:
             previous_turns=self._turn_history[-self.max_prev_turns:],
             domain=domain,
             retry_or_clarify=retry_or_clarify,
+            gloss_confidences=gloss_confidences or [],
         )
 
         raw_output = self.provider.correct(llm_input)

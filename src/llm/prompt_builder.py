@@ -78,7 +78,7 @@ def build_prompt(llm_input: LLMInput) -> str:
         f"  [{i+1}] {t}" for i, t in enumerate(llm_input.previous_turns[-5:])
     ) or "  (없음)"
 
-    gloss_text = ", ".join(llm_input.top_k_gloss) or "(없음)"
+    gloss_text = _format_gloss(llm_input.top_k_gloss, llm_input.gloss_confidences)
     nms_text = _format_nms(llm_input.nms_summary)
     confidence_level = _confidence_level(llm_input.confidence)
     domain_guideline = _domain_guideline(llm_input.domain, llm_input.confidence)
@@ -134,6 +134,15 @@ def _confidence_instruction(conf: float) -> str:
     elif conf < 0.8:
         return _MID_CONFIDENCE_INSTRUCTION + "\n"
     return ""
+
+
+def _format_gloss(glosses: list[str], confs: list[float]) -> str:
+    """gloss를 신뢰도와 함께 표기: '오늘(0.92), 강풍(0.41)'. 신뢰도 없으면 단어만."""
+    if not glosses:
+        return "(없음)"
+    if confs and len(confs) == len(glosses):
+        return ", ".join(f"{g}({c:.2f})" for g, c in zip(glosses, confs))
+    return ", ".join(glosses)
 
 
 def _format_nms(nms: dict) -> str:

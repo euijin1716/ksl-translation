@@ -87,7 +87,9 @@ class InferencePipeline:
         )
 
         # ── 중간 출력 처리 ────────────────────────────────────────────────────
-        gloss_hypotheses = self._decode_gloss(outputs.get("gloss_logits"))
+        gloss_pairs = self._decode_gloss(outputs.get("gloss_logits"))   # [(gloss, 신뢰도)]
+        gloss_hypotheses = [g for g, _ in gloss_pairs]
+        gloss_confidences = [c for _, c in gloss_pairs]
         nms_summary = self._decode_nms(outputs)
         confidence = self._estimate_confidence(outputs)
         draft_text = self._decode_draft(outputs, batch)
@@ -100,6 +102,7 @@ class InferencePipeline:
         llm_output = self.corrector.correct(
             korean_draft=draft_text,
             gloss_hypotheses=gloss_hypotheses,
+            gloss_confidences=gloss_confidences,
             nms_summary=nms_summary,
             confidence=confidence,
             domain=domain,
@@ -117,17 +120,24 @@ class InferencePipeline:
             nms_summary=nms_summary,
         )
 
-    def _decode_gloss(self, gloss_logits: torch.Tensor | None) -> list[str]:
+    def _decode_gloss(self, gloss_logits: torch.Tensor | None) -> list[tuple[str, float]]:
+        """CTC argmax 1-best gloss + 각 gloss의 신뢰도(emit 프레임 softmax 확률).
+
+        Returns: [(gloss단어, 신뢰도 0~1), ...] (CTC 압축 후, 상위 5개).
+        """
         if gloss_logits is None:
             return []
-        ids = gloss_logits.argmax(dim=-1)[0].tolist()    # [T]
-        # CTC: 연속 중복 제거, blank(0) 제거
-        prev, collapsed = -1, []
-        for t in ids:
-            if t != prev and t != 0:
-                collapsed.append(t)
-            prev = t
-        return self.gloss_vocab.decode(collapsed[:5])
+        probs = gloss_logits[0].softmax(dim=-1)          # [T, V]
+        ids = probs.argmax(dim=-1).tolist()              # [T]
+        # CTC: 연속 중복 제거, blank(0) 제거 + emit 프레임 신뢰도 수집
+        prev, emitted = -1, []                           # [(id, conf)]
+        for t, tok in enumerate(ids):
+            if tok != prev and tok != 0:
+                emitted.append((tok, float(probs[t, tok])))
+            prev = tok
+        emitted = emitted[:5]
+        words = self.gloss_vocab.decode([tok for tok, _ in emitted])
+        return [(w, round(c, 3)) for w, (_, c) in zip(words, emitted)]
 
     def _decode_nms(self, outputs: dict[str, Any]) -> dict[str, Any]:
         nms_logits = outputs.get("nms_logits")
