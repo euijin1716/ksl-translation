@@ -35,6 +35,7 @@ def parse_response(raw: str, fallback_text: str = "") -> LLMOutput:
         final_text=fallback_text,
         uncertain_spans=[],
         retry_or_clarify=False,
+        normalization_notes="parse_failed",
         raw_response=raw,
     )
 

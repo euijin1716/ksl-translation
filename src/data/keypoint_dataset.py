@@ -182,7 +182,7 @@ class KeypointDataset(Dataset):
     def _resolve_keypoint_dir(self, sample: KSLSample) -> Path | None:
         if sample.keypoint_path is None:
             return None
-        kp = Path(sample.keypoint_path)
+        kp = _manifest_path(sample.keypoint_path)
         if kp.is_absolute():
             return kp
         full = self.keypoint_root.parent / kp
@@ -374,7 +374,7 @@ class KeypointDataset(Dataset):
     def _resolve_crop_index_path(self, sample: KSLSample) -> Path | None:
         if sample.crop_index_path is None:
             return None
-        path = Path(sample.crop_index_path)
+        path = _manifest_path(sample.crop_index_path)
         if path.is_absolute():
             return path
         full = self.crop_root.parent / path
@@ -427,3 +427,8 @@ class KeypointDataset(Dataset):
         tgt_tokens = torch.tensor([self.bos_id] + ids, dtype=torch.long)
         draft_labels = torch.tensor(ids + [self.eos_id], dtype=torch.long)
         return tgt_tokens, draft_labels
+
+
+def _manifest_path(value: str | Path) -> Path:
+    """Convert manifest paths written on Windows into POSIX-friendly paths."""
+    return Path(str(value).replace("\\", "/"))

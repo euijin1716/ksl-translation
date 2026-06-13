@@ -118,7 +118,7 @@ train:
 llm:
   provider: claude     # "dummy" | "claude" | "openai"
   model: claude-sonnet-4-6
-  max_tokens: 512
+  max_tokens: 1024
   max_prev_turns: 5
   confidence_threshold: 0.4
 

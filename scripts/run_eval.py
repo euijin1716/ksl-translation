@@ -45,6 +45,12 @@ def parse_args():
         action="store_true",
         help="비수지(얼굴) 입력을 추론 시 0으로 가린 변형을 추가 평가해 기여도(WER 차이)를 측정한다.",
     )
+    p.add_argument(
+        "--llm",
+        default="none",
+        choices=["none", "claude", "openai", "dummy"],
+        help="LLM 문맥 보정 provider. 지정하면 config llm.provider를 override한다. (기본: none = 보정 안 함)",
+    )
     return p.parse_args()
 
 
@@ -182,7 +188,15 @@ def main():
         ckpt.get("load_report"),
     )
 
-    evaluator = KSLEvaluator(model, device=args.device)
+    corrector = None
+    if args.llm != "none":
+        from src.llm.factory import build_corrector
+        llm_cfg = dict(cfg.get("llm", {}))
+        llm_cfg["provider"] = args.llm
+        corrector = build_corrector(llm_cfg)
+        logger.info("LLM corrector: provider=%s model=%s", args.llm, llm_cfg.get("model", "?"))
+
+    evaluator = KSLEvaluator(model, device=args.device, corrector=corrector)
     draft_mode = args.draft_mode or cfg.get("eval", {}).get("draft_mode", "greedy")
     result = evaluator.evaluate(
         loader,

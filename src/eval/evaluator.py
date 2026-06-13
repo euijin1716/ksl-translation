@@ -16,7 +16,8 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from ..data.signals import NMS_DETAIL_GROUPS
+from ..data.signals import NMS_DETAIL_CLASSES, NMS_DETAIL_GROUPS, NMS_KEYS
+from ..llm.corrector import ContextCorrector
 from .metrics import (
     compute_accuracy,
     compute_bleu,
@@ -75,6 +76,12 @@ class EvalResult:
     boundary_label_distribution: dict[str, int] = field(default_factory=dict)
     metric_warnings: list[str] = field(default_factory=list)
 
+    # LLM 보정 후 번역 지표 (corrector 사용 시에만 채워짐)
+    llm_bleu: float = 0.0
+    llm_chrf: float = 0.0
+    llm_rouge_l: float = 0.0
+    llm_domain_bleu: dict[str, float] = field(default_factory=dict)
+
     # 오류 샘플
     error_samples: list[dict] = field(default_factory=list)
 
@@ -82,7 +89,7 @@ class EvalResult:
         return self.__dict__.copy()
 
     def summary(self) -> str:
-        return (
+        s = (
             f"[{self.split}] n={self.num_samples} draft={self.draft_mode} | "
             f"intent_acc={self.intent_accuracy:.3f} | "
             f"boundary_f1={self.boundary_f1:.3f} | "
@@ -92,6 +99,12 @@ class EvalResult:
             f"BLEU={self.bleu:.2f} | chrF={self.chrf:.2f} | ROUGE-L={self.rouge_l:.2f} | "
             f"TTFT={self.ttft_ms:.0f}ms"
         )
+        if self.llm_bleu > 0 or self.llm_chrf > 0:
+            s += (
+                f" | [LLM] BLEU={self.llm_bleu:.2f} | chrF={self.llm_chrf:.2f} | "
+                f"ROUGE-L={self.llm_rouge_l:.2f}"
+            )
+        return s
 
 
 class KSLEvaluator:
@@ -102,11 +115,69 @@ class KSLEvaluator:
         device: 평가 디바이스
     """
 
-    def __init__(self, model: torch.nn.Module, device: str = "cpu") -> None:
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        device: str = "cpu",
+        corrector: ContextCorrector | None = None,
+    ) -> None:
         self.model = model
         self.model.eval()
         self.device = torch.device(device)
         self.model.to(self.device)
+        self.corrector = corrector
+        if corrector is not None:
+            logger.info("LLM 보정 활성화 — 샘플 수에 따라 평가 시간이 길어질 수 있습니다.")
+
+    @staticmethod
+    def _decode_gloss_sample(
+        gloss_logits: torch.Tensor | None,
+        sample_idx: int,
+        seq_len: int,
+        gloss_vocab,
+    ) -> list[tuple[str, float]]:
+        """단일 샘플의 gloss + 신뢰도를 CTC argmax로 디코딩한다."""
+        if gloss_logits is None or gloss_vocab is None:
+            return []
+        probs = gloss_logits[sample_idx, :seq_len].softmax(dim=-1)
+        ids = probs.argmax(dim=-1).tolist()
+        prev, emitted = -1, []
+        for t, tok in enumerate(ids):
+            if tok != prev and tok != 0:
+                emitted.append((tok, float(probs[t, tok])))
+            prev = tok
+        emitted = emitted[:5]
+        words = gloss_vocab.decode([tok for tok, _ in emitted])
+        return [(w, round(c, 3)) for w, (_, c) in zip(words, emitted)]
+
+    @staticmethod
+    def _decode_nms_sample(outputs: dict, sample_idx: int, seq_len: int) -> dict:
+        """단일 샘플의 NMS 요약을 디코딩한다."""
+        nms_logits = outputs.get("nms_logits")
+        if nms_logits is None:
+            summary: dict = {}
+        else:
+            probs = torch.sigmoid(nms_logits[sample_idx, :seq_len]).mean(dim=0)
+            summary = {k: round(probs[i].item(), 3) for i, k in enumerate(NMS_KEYS) if i < len(probs)}
+        for group, classes in NMS_DETAIL_CLASSES.items():
+            key = f"nms_{group}_logits"
+            logits = outputs.get(key)
+            if logits is None:
+                continue
+            probs_d = torch.softmax(logits[sample_idx, :seq_len], dim=-1).mean(dim=0)
+            cls_idx = int(probs_d.argmax().item())
+            summary[f"{group}_detail"] = {
+                "label": classes[cls_idx],
+                "confidence": round(probs_d[cls_idx].item(), 3),
+            }
+        return summary
+
+    @staticmethod
+    def _estimate_confidence_sample(outputs: dict, sample_idx: int) -> float:
+        if "intent_logits" in outputs:
+            probs = torch.softmax(outputs["intent_logits"][sample_idx], dim=-1)
+            return round(probs.max().item(), 4)
+        return 0.5
 
     @staticmethod
     def _apply_ablation_mask(batch: dict, groups: set[str]) -> dict:
@@ -145,6 +216,8 @@ class KSLEvaluator:
         nms_detail_preds: dict[str, list[int]] = {group: [] for group in NMS_DETAIL_GROUPS}
         nms_detail_labels: dict[str, list[int]] = {group: [] for group in NMS_DETAIL_GROUPS}
         all_hyp_texts, all_ref_texts = [], []
+        all_llm_texts: list[str] = []
+        llm_domain_results: dict[str, list] = {}
         all_gloss_hyp, all_gloss_ref = [], []
         domain_results: dict[str, list] = {}
         all_domains: list[str] = []
@@ -245,17 +318,49 @@ class KSLEvaluator:
                 batch_domains = [str(d) for d in batch.get("domain", ["unknown"] * len(batch["korean_text"]))]
                 if "draft_logits" in outputs:
                     pred = outputs["draft_logits"].argmax(dim=-1).cpu()
-                    for ids, ref, domain in zip(pred.tolist(), batch["korean_text"], batch_domains):
+                    for i, (ids, ref, domain) in enumerate(zip(pred.tolist(), batch["korean_text"], batch_domains)):
                         hyp = _decode_token_ids(tokenizer, ids)
                         all_hyp_texts.append(hyp)
                         all_ref_texts.append(ref)
                         domain_results.setdefault(domain, []).append((hyp, ref))
+                        if self.corrector is not None:
+                            sl = int(seq_len[i].item())
+                            gloss_pairs = self._decode_gloss_sample(outputs.get("gloss_logits"), i, sl, gloss_vocab)
+                            nms = self._decode_nms_sample(outputs, i, sl)
+                            conf = self._estimate_confidence_sample(outputs, i)
+                            self.corrector.reset_history()
+                            llm_out = self.corrector.correct(
+                                korean_draft=hyp,
+                                gloss_hypotheses=[g for g, _ in gloss_pairs],
+                                gloss_confidences=[c for _, c in gloss_pairs],
+                                nms_summary=nms,
+                                confidence=conf,
+                                domain=domain,
+                            )
+                            all_llm_texts.append(llm_out.final_text)
+                            llm_domain_results.setdefault(domain, []).append((llm_out.final_text, ref))
                 elif "draft_tokens" in outputs:
-                    for ids, ref, domain in zip(outputs["draft_tokens"].cpu().tolist(), batch["korean_text"], batch_domains):
+                    for i, (ids, ref, domain) in enumerate(zip(outputs["draft_tokens"].cpu().tolist(), batch["korean_text"], batch_domains)):
                         hyp = _decode_token_ids(tokenizer, ids)
                         all_hyp_texts.append(hyp)
                         all_ref_texts.append(ref)
                         domain_results.setdefault(domain, []).append((hyp, ref))
+                        if self.corrector is not None:
+                            sl = int(seq_len[i].item())
+                            gloss_pairs = self._decode_gloss_sample(outputs.get("gloss_logits"), i, sl, gloss_vocab)
+                            nms = self._decode_nms_sample(outputs, i, sl)
+                            conf = self._estimate_confidence_sample(outputs, i)
+                            self.corrector.reset_history()
+                            llm_out = self.corrector.correct(
+                                korean_draft=hyp,
+                                gloss_hypotheses=[g for g, _ in gloss_pairs],
+                                gloss_confidences=[c for _, c in gloss_pairs],
+                                nms_summary=nms,
+                                confidence=conf,
+                                domain=domain,
+                            )
+                            all_llm_texts.append(llm_out.final_text)
+                            llm_domain_results.setdefault(domain, []).append((llm_out.final_text, ref))
 
         result = EvalResult(split=split, num_samples=len(all_intent_labels), draft_mode=draft_mode)
         result.domain_distribution = dict(Counter(all_domains))
@@ -306,6 +411,16 @@ class KSLEvaluator:
             result.domain_bleu = {
                 domain: compute_bleu([h for h, _ in pairs], [r for _, r in pairs])["bleu"]
                 for domain, pairs in domain_results.items()
+                if pairs
+            }
+
+        if all_llm_texts:
+            result.llm_bleu = compute_bleu(all_llm_texts, all_ref_texts)["bleu"]
+            result.llm_chrf = compute_chrf(all_llm_texts, all_ref_texts)
+            result.llm_rouge_l = compute_rouge_l(all_llm_texts, all_ref_texts)
+            result.llm_domain_bleu = {
+                domain: compute_bleu([h for h, _ in pairs], [r for _, r in pairs])["bleu"]
+                for domain, pairs in llm_domain_results.items()
                 if pairs
             }
 
