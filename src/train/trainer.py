@@ -245,11 +245,36 @@ class KSLTrainer:
             total_loss += losses["total"].item()
         return total_loss / max(len(self.val_loader), 1)
 
-    def fit(self) -> None:
+    def fit(self, resume: str | None = None) -> None:
         """전체 학습 루프."""
-        logger.info(f"Starting Stage {self.config.stage} training")
+        import re
+
+        start_epoch = 1
         epochs_without_improvement = 0
-        for epoch in range(1, self.config.max_epochs + 1):
+
+        if resume:
+            ckpt = torch.load(resume, map_location=self.device, weights_only=False)
+            self.model.load_state_dict(ckpt["model_state_dict"])
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            if "scaler_state_dict" in ckpt:
+                self.scaler.load_state_dict(ckpt["scaler_state_dict"])
+            self.global_step = ckpt.get("global_step", 0)
+            self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+            saved_epoch = ckpt.get("epoch")
+            if saved_epoch is None:
+                m = re.match(r"epoch_(\d+)", Path(resume).stem)
+                saved_epoch = int(m.group(1)) if m else 0
+            start_epoch = saved_epoch + 1
+            # scheduler를 재개 epoch까지 fast-forward한다
+            for _ in range(saved_epoch):
+                self.scheduler.step()
+            logger.info(
+                "Resumed from %s — next epoch=%d, best_val_loss=%.4f",
+                resume, start_epoch, self.best_val_loss,
+            )
+
+        logger.info(f"Starting Stage {self.config.stage} training from epoch {start_epoch}")
+        for epoch in range(start_epoch, self.config.max_epochs + 1):
             train_loss = self.train_epoch()
             self.scheduler.step()
 
@@ -261,15 +286,15 @@ class KSLTrainer:
                 if improved:
                     self.best_val_loss = val_loss
                     epochs_without_improvement = 0
-                    self.save_checkpoint("best.pt")
-                    self.save_checkpoint("best_by_val_loss.pt")
+                    self.save_checkpoint("best.pt", epoch=epoch)
+                    self.save_checkpoint("best_by_val_loss.pt", epoch=epoch)
                 else:
                     epochs_without_improvement += 1
             else:
                 logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}")
 
             if epoch % self.config.save_every_n_epochs == 0:
-                self.save_checkpoint(f"epoch_{epoch:04d}.pt")
+                self.save_checkpoint(f"epoch_{epoch:04d}.pt", epoch=epoch)
 
             if (
                 self.config.early_stop_patience > 0
@@ -284,13 +309,15 @@ class KSLTrainer:
                 )
                 break
 
-        self.save_checkpoint("last.pt")
+        self.save_checkpoint("last.pt", epoch=self.config.max_epochs)
 
-    def save_checkpoint(self, name: str) -> None:
+    def save_checkpoint(self, name: str, epoch: int = 0) -> None:
         path = self.ckpt_dir / name
         torch.save({
+            "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "scaler_state_dict": self.scaler.state_dict(),
             "global_step": self.global_step,
             "best_val_loss": self.best_val_loss,
             "config": asdict(self.config),

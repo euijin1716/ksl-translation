@@ -27,7 +27,7 @@ def parse_args():
     p.add_argument("--stage", default=None, help="Stage override; only C is supported")
     p.add_argument("--device", default=None, help="Override device (cpu/cuda)")
     p.add_argument("--batch_size", type=int, default=None, help="Override train batch size")
-    p.add_argument("--num_workers", type=int, default=16, help="Override DataLoader worker count")
+    p.add_argument("--num_workers", type=int, default=8, help="Override DataLoader worker count")
     p.add_argument("--max_epochs", type=int, default=None, help="Override max epochs")
     p.add_argument("--amp", dest="use_amp", action="store_true", help="Enable CUDA mixed precision")
     p.add_argument("--no_amp", dest="use_amp", action="store_false", help="Disable CUDA mixed precision")
@@ -39,6 +39,8 @@ def parse_args():
                         "(예: data/manifests/train.jsonl)")
     p.add_argument("--gloss_vocab", default=None,
                    help="gloss vocab JSON 경로. 없으면 manifest에서 자동 구축")
+    p.add_argument("--resume", default=None,
+                   help="체크포인트 경로에서 학습 재개 (예: checkpoints/C/epoch_0050.pt)")
     return p.parse_args()
 
 
@@ -207,10 +209,15 @@ def main():
             gloss_vocab.save(vocab_save_path)
             logger.info(f"GlossVocab built: {len(gloss_vocab)} tokens → {vocab_save_path}")
 
+        enable_hand_visual = cfg.get("model", {}).get("enable_hand_visual", False)
+        load_hand_crops = data_cfg.get("load_hand_crops", True) and enable_hand_visual
+        if not enable_hand_visual and data_cfg.get("load_hand_crops", True):
+            logger.info("enable_hand_visual=False → load_hand_crops 자동 비활성")
+
         dataset_kwargs = {
             "keypoint_root": keypoint_root,
             "crop_root": crop_root,
-            "load_hand_crops": data_cfg.get("load_hand_crops", True),
+            "load_hand_crops": load_hand_crops,
             "sampling_strategy": data_cfg.get("sequence_sampling", "uniform"),
             "boundary_mode": data_cfg.get("boundary_mode", "annotation_or_motion"),
             "gloss_vocab": gloss_vocab,
@@ -329,7 +336,7 @@ def main():
     )
 
     trainer = KSLTrainer(model, train_config, train_loader, val_loader)
-    trainer.fit()
+    trainer.fit(resume=args.resume)
 
 
 if __name__ == "__main__":

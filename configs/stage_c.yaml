@@ -1,6 +1,9 @@
 # Stage C: full multi-signal recognizer / draft translator
 # base.yaml을 상속하고 수지(gloss/hand) + 비수지(NMS/face) + draft를 함께 학습한다.
 
+data:
+  load_hand_crops: false  # enable_hand_visual=false이므로 crop 로딩 비활성
+
 model:
   stage: C
   landmark:
@@ -10,14 +13,17 @@ model:
 
 train:
   stage: C
-  max_epochs: 50
-  batch_size: 16
+  max_epochs: 60
+  batch_size: 32
   num_workers: 8
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
   use_amp: true
   device: cuda
+  lr: 2.0e-4
+  early_stop_patience: 10
+  early_stop_min_delta: 0.001
   loss_weight_gloss: 1.0
   loss_weight_nms: 0.5
   loss_weight_nms_detail: 0.3
